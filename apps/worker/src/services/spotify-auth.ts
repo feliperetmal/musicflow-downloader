@@ -12,6 +12,7 @@ const SPOTIFY_ACCOUNTS_HOSTS = new Set(['accounts.spotify.com', 'api.spotify.com
 interface PendingPkceFlow {
   codeVerifier: string;
   returnTo: string;
+  frontendUrl?: string;
   createdAtMs: number;
 }
 
@@ -147,11 +148,31 @@ export class SpotifyAuthService {
     }
   }
 
+  private sanitizeFrontendUrl(rawUrl: string | undefined): string {
+    if (!rawUrl) return this.config.frontendBaseUrl;
+    try {
+      const parsed = new URL(rawUrl);
+      if (
+        parsed.hostname === 'localhost' ||
+        parsed.hostname === '127.0.0.1' ||
+        parsed.hostname.endsWith('.github.io') ||
+        parsed.origin === this.config.frontendBaseUrl
+      ) {
+        return (
+          parsed.origin + (parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, ''))
+        );
+      }
+    } catch {
+      // Ignore invalid URL
+    }
+    return this.config.frontendBaseUrl;
+  }
+
   isConfigured(): boolean {
     return Boolean(this.config.spotifyClientId);
   }
 
-  createLoginUrl(returnTo = '/'): { authorizeUrl: string; state: string } {
+  createLoginUrl(returnTo = '/', frontendUrl?: string): { authorizeUrl: string; state: string } {
     if (!this.config.spotifyClientId) {
       throw new Error('SPOTIFY_CLIENT_ID não configurado no servidor.');
     }
@@ -171,6 +192,7 @@ export class SpotifyAuthService {
     this.pendingFlows.set(state, {
       codeVerifier,
       returnTo: safeReturnTo,
+      frontendUrl: this.sanitizeFrontendUrl(frontendUrl),
       createdAtMs: Date.now(),
     });
 
@@ -195,7 +217,7 @@ export class SpotifyAuthService {
     code?: string;
     state?: string;
     error?: string;
-  }): Promise<{ handoff: string; returnTo: string }> {
+  }): Promise<{ handoff: string; returnTo: string; frontendUrl?: string }> {
     if (params.error) {
       throw new Error(
         params.error === 'access_denied'
@@ -314,7 +336,7 @@ export class SpotifyAuthService {
       hasRefreshToken: Boolean(session.refreshToken),
     });
 
-    return { handoff, returnTo: flow.returnTo };
+    return { handoff, returnTo: flow.returnTo, frontendUrl: flow.frontendUrl };
   }
 
   consumeHandoff(handoff: string): { sessionId: string; returnTo: string } | null {
@@ -526,14 +548,15 @@ export function startLocalSpotifyCallbackServer(
       const state = url.searchParams.get('state') ?? undefined;
       const error = url.searchParams.get('error') ?? undefined;
 
-      const { handoff, returnTo } = await authService.handleCallback({ code, state, error });
+      const { handoff, returnTo, frontendUrl } = await authService.handleCallback({ code, state, error });
+      const base = (frontendUrl || config.frontendBaseUrl).replace(/\/+$/, '');
       const isStaticOrPages =
-        config.frontendBaseUrl.includes('github.io') || config.frontendBaseUrl.includes('static');
+        base.includes('github.io') || base.includes('static');
       const target = isStaticOrPages
-        ? `${config.frontendBaseUrl}/?spotifyHandoff=${encodeURIComponent(
+        ? `${base}/?spotifyHandoff=${encodeURIComponent(
             handoff,
           )}&returnTo=${encodeURIComponent(returnTo)}`
-        : `${config.frontendBaseUrl}/api/auth/spotify/complete?handoff=${encodeURIComponent(
+        : `${base}/api/auth/spotify/complete?handoff=${encodeURIComponent(
             handoff,
           )}&returnTo=${encodeURIComponent(returnTo)}`;
       res.statusCode = 302;

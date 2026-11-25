@@ -143,14 +143,15 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
       const state = typeof req.query.state === 'string' ? req.query.state : undefined;
       const error = typeof req.query.error === 'string' ? req.query.error : undefined;
 
-      const { handoff, returnTo } = await authService.handleCallback({ code, state, error });
+      const { handoff, returnTo, frontendUrl } = await authService.handleCallback({ code, state, error });
+      const base = (frontendUrl || config.frontendBaseUrl).replace(/\/+$/, '');
       const isStaticOrPages =
-        config.frontendBaseUrl.includes('github.io') || config.frontendBaseUrl.includes('static');
+        base.includes('github.io') || base.includes('static');
       const target = isStaticOrPages
-        ? `${config.frontendBaseUrl}/?spotifyHandoff=${encodeURIComponent(
+        ? `${base}/?spotifyHandoff=${encodeURIComponent(
             handoff,
           )}&returnTo=${encodeURIComponent(returnTo)}`
-        : `${config.frontendBaseUrl}/api/auth/spotify/complete?handoff=${encodeURIComponent(
+        : `${base}/api/auth/spotify/complete?handoff=${encodeURIComponent(
             handoff,
           )}&returnTo=${encodeURIComponent(returnTo)}`;
       res.redirect(target);
@@ -169,7 +170,15 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
   app.get('/auth/spotify/login', (req: Request, res: Response, next: NextFunction) => {
     try {
       const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : '/';
-      const { authorizeUrl } = authService.createLoginUrl(returnTo);
+      const frontendUrl =
+        typeof req.query.frontendUrl === 'string'
+          ? req.query.frontendUrl
+          : typeof req.headers.referer === 'string'
+          ? req.headers.referer
+          : typeof req.headers.origin === 'string'
+          ? req.headers.origin
+          : undefined;
+      const { authorizeUrl } = authService.createLoginUrl(returnTo, frontendUrl);
       res.json({ authorizeUrl });
     } catch (err) {
       next(err);

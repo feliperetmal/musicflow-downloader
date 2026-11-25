@@ -36,14 +36,18 @@ import { Header } from './header';
 import { JobManager, type HistoryRecord } from './job-manager';
 import { MediaResultCard } from './media-result-card';
 import { ToastStack, type ToastMessage, type ToastType } from './notifications';
+import { ServerSettingsDialog } from './server-settings-dialog';
 import { UploadConverter } from './upload-converter';
 import {
   clearSpotifySession,
   clientFetch,
   getDownloadUrl,
+  getEffectiveWorkerUrl,
   getEventSourceUrl,
   getSpotifySessionId,
+  isGitHubPagesHost,
   saveSpotifySessionId,
+  testWorkerConnection,
 } from '@/lib/api-client';
 
 const HISTORY_STORAGE_KEY = 'musicflow-conversion-history-v2';
@@ -66,6 +70,8 @@ export function MusicFlowApp() {
   const [history, setHistory] = React.useState<HistoryRecord[]>([]);
   const [toasts, setToasts] = React.useState<ToastMessage[]>([]);
   const [showUploadDrawer, setShowUploadDrawer] = React.useState(false);
+  const [showServerSettings, setShowServerSettings] = React.useState(false);
+  const [serverConnected, setServerConnected] = React.useState(false);
   const [spotifyAuth, setSpotifyAuth] = React.useState<SpotifyAuthStatus | null>(null);
   const [zipBatchTarget, setZipBatchTarget] = React.useState<{
     id: string;
@@ -101,6 +107,18 @@ export function MusicFlowApp() {
     }, 5000);
   }, []);
 
+  const checkServerStatus = React.useCallback(async () => {
+    const workerUrl = getEffectiveWorkerUrl();
+    if (workerUrl) {
+      const res = await testWorkerConnection();
+      setServerConnected(res.ok);
+    } else if (typeof window !== 'undefined' && !window.location.hostname.includes('github.io')) {
+      setServerConnected(true);
+    } else {
+      setServerConnected(false);
+    }
+  }, []);
+
   const loadSpotifyStatus = React.useCallback((specificSessionId?: string) => {
     const sid = specificSessionId || getSpotifySessionId();
     const query = sid ? `?sessionId=${encodeURIComponent(sid)}` : '';
@@ -111,9 +129,23 @@ export function MusicFlowApp() {
   }, []);
 
   const handleSpotifyLogin = React.useCallback(async () => {
+    const workerUrl = getEffectiveWorkerUrl();
+    if (!workerUrl && isGitHubPagesHost()) {
+      setShowServerSettings(true);
+      notify(
+        'info',
+        'Configuração do Servidor',
+        'Conecte o MusicFlow ao seu Worker (local ou nuvem) para autenticar no Spotify.',
+      );
+      return;
+    }
+
     try {
+      const frontendUrl = window.location.origin + window.location.pathname;
       const res = await clientFetch(
-        `/auth/spotify/login?returnTo=${encodeURIComponent(window.location.pathname)}`,
+        `/auth/spotify/login?returnTo=${encodeURIComponent(
+          window.location.pathname,
+        )}&frontendUrl=${encodeURIComponent(frontendUrl)}`,
       );
       const data = await res.json();
       if (res.ok && data.authorizeUrl) {
@@ -122,7 +154,12 @@ export function MusicFlowApp() {
         notify('error', 'Login Spotify', data.error || 'Não foi possível gerar URL de login.');
       }
     } catch {
-      notify('error', 'Login Spotify', 'Erro de conexão com o servidor de autenticação.');
+      notify(
+        'error',
+        'Login Spotify',
+        'Erro de conexão com o Worker. Verifique se o servidor está ativo nas configurações.',
+      );
+      setShowServerSettings(true);
     }
   }, [notify]);
 
@@ -196,6 +233,8 @@ export function MusicFlowApp() {
       notify('error', 'Autenticação Spotify', spError);
       window.history.replaceState({}, '', window.location.pathname);
     }
+
+    checkServerStatus();
 
     const sources = eventSourcesRef.current;
     return () => {
@@ -340,6 +379,17 @@ export function MusicFlowApp() {
     const parsed = parseMediaLink(rawUrl);
     if (!parsed.isValid) {
       setAnalysisError(parsed.error || 'Cole um link válido do YouTube, YouTube Music ou Spotify.');
+      return;
+    }
+
+    const workerUrl = getEffectiveWorkerUrl();
+    if (!workerUrl && isGitHubPagesHost()) {
+      setShowServerSettings(true);
+      notify(
+        'info',
+        'Configuração do Servidor',
+        'Para processar links no GitHub Pages, conecte o site ao seu Worker.',
+      );
       return;
     }
 
@@ -917,7 +967,28 @@ export function MusicFlowApp() {
         spotifyAuth={spotifyAuth}
         onSpotifyLogin={handleSpotifyLogin}
         onSpotifyLogout={handleSpotifyLogout}
+        serverConnected={serverConnected}
+        onOpenServerSettings={() => setShowServerSettings(true)}
       />
+
+      {isGitHubPagesHost() && !serverConnected && (
+        <div className="bg-gradient-to-r from-emerald-950/80 via-slate-900 to-purple-950/70 border-b border-emerald-500/20 px-4 py-2 text-xs text-emerald-200">
+          <div className="mx-auto max-w-5xl flex flex-wrap items-center justify-between gap-2">
+            <span>
+              💡 <strong>Modo GitHub Pages:</strong> Conecte o frontend ao seu Worker (local no PC ou na nuvem) para realizar conversões e login do Spotify.
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowServerSettings(true)}
+              className="h-6 text-[11px] shrink-0 border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+            >
+              Conectar Servidor
+            </Button>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-5xl space-y-8 px-4 py-8 sm:px-6 sm:py-12">
         {/* YTSave-style Centered Hero */}
@@ -1149,6 +1220,15 @@ export function MusicFlowApp() {
           )}
         </section>
       </main>
+
+      <ServerSettingsDialog
+        isOpen={showServerSettings}
+        onClose={() => setShowServerSettings(false)}
+        onSaved={() => {
+          checkServerStatus();
+          loadSpotifyStatus();
+        }}
+      />
 
       <ToastStack
         toasts={toasts}

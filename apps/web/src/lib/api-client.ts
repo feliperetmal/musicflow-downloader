@@ -57,16 +57,106 @@ export function getEffectiveWorkerUrl(): string {
     return envUrl.replace(/\/+$/, '');
   }
 
-  // If running in browser on GitHub Pages without configured worker, return empty string
-  if (typeof window !== 'undefined' && window.location.hostname.includes('github.io')) {
-    return '';
-  }
-
   return '';
 }
 
 export function isDirectWorkerMode(): boolean {
   return Boolean(getEffectiveWorkerUrl());
+}
+
+export function isGitHubPagesHost(): boolean {
+  return typeof window !== 'undefined' && window.location.hostname.includes('github.io');
+}
+
+export function getStoredWorkerConfig(): { url: string; secret: string } {
+  if (typeof window === 'undefined') return { url: '', secret: '' };
+  return {
+    url:
+      window.localStorage.getItem(WORKER_URL_STORAGE_KEY)?.trim() ||
+      process.env.NEXT_PUBLIC_WORKER_URL?.trim() ||
+      '',
+    secret:
+      window.localStorage.getItem(WORKER_SECRET_STORAGE_KEY)?.trim() ||
+      process.env.NEXT_PUBLIC_WORKER_SECRET?.trim() ||
+      '',
+  };
+}
+
+export function setWorkerConfig(url: string, secret?: string): void {
+  if (typeof window === 'undefined') return;
+  const cleanUrl = url.trim().replace(/\/+$/, '');
+  if (cleanUrl) {
+    window.localStorage.setItem(WORKER_URL_STORAGE_KEY, cleanUrl);
+  } else {
+    window.localStorage.removeItem(WORKER_URL_STORAGE_KEY);
+  }
+
+  if (secret !== undefined) {
+    const cleanSecret = secret.trim();
+    if (cleanSecret) {
+      window.localStorage.setItem(WORKER_SECRET_STORAGE_KEY, cleanSecret);
+    } else {
+      window.localStorage.removeItem(WORKER_SECRET_STORAGE_KEY);
+    }
+  }
+}
+
+export function clearWorkerConfig(): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(WORKER_URL_STORAGE_KEY);
+  window.localStorage.removeItem(WORKER_SECRET_STORAGE_KEY);
+}
+
+export async function testWorkerConnection(
+  targetUrl?: string,
+  targetSecret?: string,
+): Promise<{
+  ok: boolean;
+  version?: string;
+  service?: string;
+  error?: string;
+}> {
+  const url = (targetUrl ?? getEffectiveWorkerUrl()).replace(/\/+$/, '');
+  if (!url) {
+    return { ok: false, error: 'URL do servidor não informada.' };
+  }
+
+  try {
+    const headers = new Headers();
+    const secret =
+      targetSecret !== undefined
+        ? targetSecret
+        : (typeof window !== 'undefined'
+            ? window.localStorage.getItem(WORKER_SECRET_STORAGE_KEY)
+            : '') || process.env.NEXT_PUBLIC_WORKER_SECRET || '';
+    if (secret) {
+      headers.set('x-worker-secret', secret);
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    const res = await fetch(`${url}/health`, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      return { ok: false, error: `Servidor respondeu com código HTTP ${res.status}` };
+    }
+
+    const data = await res.json();
+    return {
+      ok: true,
+      version: data.version,
+      service: data.service,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Falha na conexão de rede';
+    return { ok: false, error: message };
+  }
 }
 
 export function getApiEndpoint(subpath: string): string {
