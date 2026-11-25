@@ -14,7 +14,7 @@
     "build": "npm --workspace=@musicflow/shared run build && npm --workspace=@musicflow/worker run build && npm --workspace=@musicflow/web run build",
     "build:static": "node scripts/build-static.mjs",
     "test": "npm --workspace=@musicflow/shared test && npm --workspace=@musicflow/worker test && npm --workspace=@musicflow/web test",
-    "typecheck": "npm --workspace=@musicflow/shared run typecheck && npm --workspace=@musicflow/worker run typecheck && npm --workspace=@musicflow/web run typecheck"
+    "typecheck": "npm --workspace=@musicflow/shared run build && npm --workspace=@musicflow/shared run typecheck && npm --workspace=@musicflow/worker run typecheck && npm --workspace=@musicflow/web run typecheck"
   },
   "engines": {
     "node": ">=20.0.0"
