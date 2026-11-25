@@ -21,8 +21,9 @@ try {
   }
 
   process.env.STATIC_EXPORT = 'true';
+  const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   console.log('[build-static] Executando next build (output: export)...');
-  execSync('npm.cmd --workspace=@musicflow/web run build', {
+  execSync(`${npmCmd} --workspace=@musicflow/web run build`, {
     cwd: rootDir,
     stdio: 'inherit',
     env: { ...process.env, STATIC_EXPORT: 'true' },
