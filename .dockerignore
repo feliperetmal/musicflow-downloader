@@ -1,0 +1,11 @@
+node_modules
+.git
+.github
+.next
+out
+dist
+tmp
+.env
+.env.*
+*.log
+apps/web

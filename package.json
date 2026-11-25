@@ -1,0 +1,22 @@
+{
+  "name": "musicflow-downloader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MusicFlow Downloader — Análise de links Spotify/YouTube, organização de faixas e conversão autorizada para MP3 com FFmpeg.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:worker": "npm --workspace=@musicflow/worker run dev",
+    "dev:web": "npm --workspace=@musicflow/web run dev",
+    "build": "npm --workspace=@musicflow/shared run build && npm --workspace=@musicflow/worker run build && npm --workspace=@musicflow/web run build",
+    "build:static": "node scripts/build-static.mjs",
+    "test": "npm --workspace=@musicflow/shared test && npm --workspace=@musicflow/worker test && npm --workspace=@musicflow/web test",
+    "typecheck": "npm --workspace=@musicflow/shared run typecheck && npm --workspace=@musicflow/worker run typecheck && npm --workspace=@musicflow/web run typecheck"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

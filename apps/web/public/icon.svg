@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="50%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="#0a0d14"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="url(#grad)" stroke-width="8" opacity="0.6"/>
+  <!-- Audio Waveform -->
+  <path d="M96 256 L96 256 M144 200 L144 312 M192 144 L192 368 M240 112 L240 400 M288 160 L288 352 M336 208 L336 304 M384 176 L384 336 M432 256 L432 256" 
+        stroke="url(#grad)" stroke-width="24" stroke-linecap="round" fill="none"/>
+  <!-- Download arrow accent -->
+  <circle cx="396" cy="396" r="64" fill="#10b981"/>
+  <path d="M396 364 L396 420 M376 404 L396 424 L416 404" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

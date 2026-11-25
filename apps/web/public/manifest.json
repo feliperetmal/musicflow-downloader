@@ -1,0 +1,18 @@
+{
+  "name": "MusicFlow Downloader",
+  "short_name": "MusicFlow",
+  "description": "Download e conversão rápida de músicas e vídeos em MP3 e MP4",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0d14",
+  "theme_color": "#10b981",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

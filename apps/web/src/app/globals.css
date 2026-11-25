@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-primary: #07070b;
+    --bg-elevated: #101017;
+    --bg-muted: #181822;
+    --border-subtle: rgba(255, 255, 255, 0.09);
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --accent-purple: #8b5cf6;
+    --accent-green: #10b981;
+  }
+
+  .light {
+    --bg-primary: #f8f9fc;
+    --bg-elevated: #ffffff;
+    --bg-muted: #f1f2f7;
+    --border-subtle: rgba(15, 23, 42, 0.1);
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --accent-purple: #7c3aed;
+    --accent-green: #059669;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+.glass-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+}
+
+.hero-glow {
+  background-image:
+    radial-gradient(ellipse 65% 45% at 50% -10%, rgba(139, 92, 246, 0.22), transparent),
+    radial-gradient(ellipse 45% 35% at 85% 5%, rgba(16, 185, 129, 0.14), transparent);
+}
