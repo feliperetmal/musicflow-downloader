@@ -294,4 +294,23 @@ describe('Worker API & Real FFmpeg Integration', () => {
       await freeCtx.queue.shutdown();
     }
   });
+
+  it('auto-configures port 7860, CORS and Spotify HTTPS callback when running inside Hugging Face Spaces', async () => {
+    const hfConfig = loadConfig({
+      SPACE_ID: 'feliperetmal/musicflow-worker',
+      SPACE_HOST: 'feliperetmal-musicflow-worker.hf.space',
+    });
+    expect(hfConfig.port).toBe(7860);
+    expect(hfConfig.nodeEnv).toBe('production');
+    expect(hfConfig.corsOrigin).toBe('https://feliperetmal.github.io');
+    expect(hfConfig.frontendBaseUrl).toBe('https://feliperetmal.github.io/musicflow-downloader');
+    expect(hfConfig.spotifyRedirectUri).toBe(
+      'https://feliperetmal-musicflow-worker.hf.space/auth/spotify/callback',
+    );
+    expect(hfConfig.spotifyClientId).toBe('c18da041f1b648ed9fdec51b82717160');
+
+    const rootRes = await request(ctx.app).get('/');
+    expect(rootRes.status).toBe(200);
+    expect(rootRes.body.status).toBe('ok');
+  });
 });

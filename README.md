@@ -1,4 +1,14 @@
-# MusicFlow Downloader v3.0
+---
+title: MusicFlow Downloader Worker
+emoji: 🎵
+colorFrom: green
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+# MusicFlow Downloader v4.1
 
 Plataforma full-stack para análise de links do **YouTube**, **YouTube Music**, **YouTube Shorts** e **Spotify**, listagem e exportação de playlists com suporte RTL/hebraico, autenticação Spotify OAuth 2.0 (PKCE) e conversão/download real de áudio e vídeo autorizados em **MP3** e **MP4** com **FFmpeg** e **FFprobe**.
 

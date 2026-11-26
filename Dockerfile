@@ -48,9 +48,9 @@ RUN ffmpeg -version | head -n 1 && \
     python3 --version && \
     /usr/local/bin/yt-dlp --version
 
-# Set environment
+# Set environment (PORT=7860 is default for Hugging Face Spaces; Render overrides via PORT env var)
 ENV NODE_ENV=production \
-    PORT=4000 \
+    PORT=7860 \
     FFMPEG_PATH=/usr/bin/ffmpeg \
     FFPROBE_PATH=/usr/bin/ffprobe \
     YTDLP_PATH=/usr/local/bin/yt-dlp \
@@ -73,9 +73,9 @@ RUN mkdir -p /app/tmp/musicflow && chown -R node:node /app
 
 USER node
 
-EXPOSE 4000
+EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD sh -c 'curl -fsS "http://localhost:${PORT:-4000}/ready" || exit 1'
+  CMD sh -c 'curl -fsS "http://localhost:${PORT:-7860}/ready" || exit 1'
 
 CMD ["node", "apps/worker/dist/index.js"]

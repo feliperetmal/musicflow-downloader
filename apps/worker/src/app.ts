@@ -135,6 +135,16 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
     };
   };
 
+  app.get('/', (_req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'musicflow-worker',
+      version: config.appVersion,
+      health: '/health',
+      ready: '/ready',
+    });
+  });
+
   app.get('/health', (_req, res) => {
     res.json({
       status: 'ok',

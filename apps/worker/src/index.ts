@@ -13,8 +13,8 @@ async function main(): Promise<void> {
 
   const callbackServer = startLocalSpotifyCallbackServer(authService, config);
 
-  const server = app.listen(config.port, () => {
-    log('info', `MusicFlow Worker v${config.appVersion} iniciado na porta ${config.port}`, {
+  const server = app.listen(config.port, '0.0.0.0', () => {
+    log('info', `MusicFlow Worker v${config.appVersion} iniciado em 0.0.0.0:${config.port}`, {
       concurrency: config.concurrency,
       maxUploadBytes: config.maxUploadBytes,
       maxDurationSeconds: config.maxDurationSeconds,

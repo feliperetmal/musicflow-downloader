@@ -100,7 +100,8 @@ export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
     loadRootDotEnvIfPresent();
   }
   const source = env ?? process.env;
-  const nodeEnv = source.NODE_ENV ?? 'development';
+  const isHfSpace = Boolean(source.SPACE_ID || source.SPACE_HOST);
+  const nodeEnv = source.NODE_ENV ?? (isHfSpace ? 'production' : 'development');
   const maxUploadMb = parsePositiveInt(source.MAX_UPLOAD_MB, 200);
   const jobTtlMinutes = parsePositiveInt(
     source.JOB_TTL_MINUTES || source.TEMP_FILE_TTL_MINUTES,
@@ -121,11 +122,11 @@ export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
   const frontendBaseUrl = (
     source.FRONTEND_BASE_URL ||
     source.PUBLIC_APP_URL ||
-    'http://localhost:3000'
+    (isHfSpace ? 'https://feliperetmal.github.io/musicflow-downloader' : 'http://localhost:3000')
   ).replace(/\/+$/, '');
 
   let defaultCors = 'http://localhost:3000,http://127.0.0.1:3000';
-  if (nodeEnv === 'production' && frontendBaseUrl) {
+  if ((nodeEnv === 'production' || isHfSpace) && frontendBaseUrl) {
     try {
       defaultCors = new URL(frontendBaseUrl).origin;
     } catch {
@@ -133,9 +134,13 @@ export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
     }
   }
 
+  const defaultSpotifyRedirectUri = source.SPACE_HOST
+    ? `https://${source.SPACE_HOST.replace(/^https?:\/\//, '').replace(/\/+$/, '')}/auth/spotify/callback`
+    : 'http://127.0.0.1:8888/callback';
+
   return {
     appVersion: source.APP_VERSION ?? '4.1.0',
-    port: parsePositiveInt(source.PORT, 4000),
+    port: parsePositiveInt(source.PORT, isHfSpace ? 7860 : 4000),
     nodeEnv,
     corsOrigin: source.CORS_ORIGIN ?? defaultCors,
     frontendBaseUrl,
@@ -143,8 +148,8 @@ export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
     sessionSecret,
     encryptionKey,
     adminDiagnosticsSecret: source.ADMIN_DIAGNOSTICS_SECRET ?? '',
-    concurrency: Math.min(parsePositiveInt(source.WORKER_CONCURRENCY, 4), 8),
-    ffmpegThreads: Math.min(parseNonNegativeInt(source.FFMPEG_THREADS, 0), 16),
+    concurrency: Math.min(parsePositiveInt(source.WORKER_CONCURRENCY, isHfSpace ? 2 : 4), 8),
+    ffmpegThreads: Math.min(parseNonNegativeInt(source.FFMPEG_THREADS, isHfSpace ? 2 : 0), 16),
     ffmpegTimeoutMs: parsePositiveInt(source.FFMPEG_TIMEOUT_MS, 300_000),
     maxUploadBytes: maxUploadMb * 1024 * 1024,
     maxDurationSeconds: parsePositiveInt(source.MAX_DURATION_SECONDS, 1800),
@@ -160,9 +165,9 @@ export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
     ffprobePath: source.FFPROBE_PATH || ffprobeStatic?.path || 'ffprobe',
     ytDlpPath: source.YTDLP_PATH || '',
     tempDir: path.resolve(source.TEMP_DIR || path.join(process.cwd(), 'tmp', 'musicflow')),
-    spotifyClientId: source.SPOTIFY_CLIENT_ID ?? '',
+    spotifyClientId: source.SPOTIFY_CLIENT_ID || (isHfSpace ? 'c18da041f1b648ed9fdec51b82717160' : ''),
     spotifyClientSecret: isPlaceholderSecret(rawSecret) ? '' : rawSecret,
-    spotifyRedirectUri: source.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback',
+    spotifyRedirectUri: source.SPOTIFY_REDIRECT_URI || defaultSpotifyRedirectUri,
     spotifyScopes: (source.SPOTIFY_SCOPES ?? 'playlist-read-private playlist-read-collaborative')
       .split(/\s+/)
       .filter(Boolean),
