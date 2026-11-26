@@ -228,19 +228,25 @@ export async function ensureClientSessionToken(forceRefresh = false): Promise<st
   return sessionInitInFlight;
 }
 
-export async function checkBackendHealth(): Promise<{ ok: boolean }> {
+const WAKEUP_STATUS_CODES = new Set([502, 503, 504]);
+
+export async function checkBackendHealth(): Promise<{ ok: boolean; wakingUp?: boolean }> {
   if (!isBackendAvailable()) {
     return { ok: false };
   }
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    // Allow generous window on Render Free cold start (can take up to ~55s after 15 min idle)
+    const timer = setTimeout(() => controller.abort(), 15_000);
     const res = await fetch(getApiEndpoint('/health'), {
       method: 'GET',
       cache: 'no-store',
       signal: controller.signal,
     });
     clearTimeout(timer);
+    if (WAKEUP_STATUS_CODES.has(res.status)) {
+      return { ok: false, wakingUp: true };
+    }
     return { ok: res.ok };
   } catch {
     return { ok: false };
@@ -272,6 +278,20 @@ export async function clientFetch(subpath: string, init: RequestInit = {}): Prom
     ...init,
     headers: await buildHeaders(false),
   });
+
+  // Handle Render Free cold-start spin-up (502/503/504) with a single gentle retry
+  if (WAKEUP_STATUS_CODES.has(res.status) && isDirectBackendMode()) {
+    await new Promise((r) => setTimeout(r, 3500));
+    res = await fetch(endpoint, {
+      ...init,
+      headers: await buildHeaders(false),
+    });
+    if (WAKEUP_STATUS_CODES.has(res.status)) {
+      throw new Error(
+        'O servidor está acordando da hibernação (pode levar até 1 minuto no plano gratuito). Tente novamente em alguns segundos.',
+      );
+    }
+  }
 
   // Automatically rotate expired client session token once on 401
   if (res.status === 401 && isDirectBackendMode() && !subpath.startsWith('/auth/')) {

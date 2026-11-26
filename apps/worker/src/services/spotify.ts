@@ -99,6 +99,24 @@ export class SpotifyService {
     private readonly diagnostics: DiagnosticsService,
   ) {}
 
+  private setMetadataCache(key: string, result: CollectionResult): void {
+    const now = Date.now();
+    // Prune expired entries first
+    for (const [k, entry] of this.metadataCache.entries()) {
+      if (now - entry.cachedAtMs >= 5 * 60 * 1000) {
+        this.metadataCache.delete(k);
+      }
+    }
+    // Enforce bounded LRU cache size for low-RAM containers (e.g. Render Free 512 MB)
+    const maxEntries = Math.max(10, this.config.maxMetadataCacheEntries);
+    while (this.metadataCache.size >= maxEntries) {
+      const oldestKey = this.metadataCache.keys().next().value;
+      if (!oldestKey) break;
+      this.metadataCache.delete(oldestKey);
+    }
+    this.metadataCache.set(key, { result, cachedAtMs: now });
+  }
+
   private hasClientSecretCredentials(): boolean {
     return Boolean(this.config.spotifyClientId && this.config.spotifyClientSecret);
   }
@@ -341,7 +359,7 @@ export class SpotifyService {
         legalNotice,
         items: [item],
       };
-      this.metadataCache.set(cacheKey, { result, cachedAtMs: Date.now() });
+      this.setMetadataCache(cacheKey, result);
       return result;
     }
 
@@ -414,7 +432,7 @@ export class SpotifyService {
         legalNotice,
         items,
       };
-      this.metadataCache.set(cacheKey, { result, cachedAtMs: Date.now() });
+      this.setMetadataCache(cacheKey, result);
       return result;
     }
 
@@ -430,7 +448,7 @@ export class SpotifyService {
         }
       }
       if (result.accessStatus === 'full') {
-        this.metadataCache.set(cacheKey, { result, cachedAtMs: Date.now() });
+        this.setMetadataCache(cacheKey, result);
       }
       return result;
     }

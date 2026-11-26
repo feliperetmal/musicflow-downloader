@@ -1,17 +1,21 @@
-# Render Blueprint — MusicFlow Downloader 4.1 Production Backend (Docker + FFmpeg + yt-dlp)
+# Render Blueprint — MusicFlow Downloader 4.1 Production Backend (Render Free Tier)
 # Import this repository in https://dashboard.render.com/blueprints
+# Free plan specs: 512 MB RAM, 0.1 vCPU, 750 free hours/month, ephemeral disk, spins down after 15 min idle.
 services:
   - type: web
     name: musicflow-worker
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter # Recommended ($7/mo, always-on, no cold sleep); change to 'free' for testing with spin-down
+    dockerContext: .
+    plan: free
     healthCheckPath: /ready
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: '4000'
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
       - key: PUBLIC_APP_URL
         value: https://feliperetmal.github.io/musicflow-downloader
       - key: FRONTEND_BASE_URL
@@ -21,7 +25,7 @@ services:
       - key: SPOTIFY_CLIENT_ID
         value: c18da041f1b648ed9fdec51b82717160
       - key: SPOTIFY_CLIENT_SECRET
-        sync: false # Set privately in Render Dashboard
+        sync: false # Set privately in Render Dashboard (never commit to Git)
       - key: SPOTIFY_REDIRECT_URI
         sync: false # Set to https://<your-service>.onrender.com/auth/spotify/callback
       - key: SESSION_SECRET
@@ -32,11 +36,22 @@ services:
         generateValue: true
       - key: ADMIN_DIAGNOSTICS_SECRET
         generateValue: true
+      # Render Free resource optimizations (512 MB RAM / 0.1 vCPU / ephemeral disk)
       - key: WORKER_CONCURRENCY
-        value: '2'
+        value: '1'
       - key: FFMPEG_THREADS
-        value: '2'
+        value: '1'
       - key: TEMP_FILE_TTL_MINUTES
-        value: '180'
+        value: '30'
+      - key: MAX_ACTIVE_DOWNLOADS_PER_USER
+        value: '2'
+      - key: MAX_BATCH_JOBS
+        value: '50'
+      - key: MAX_STORED_OUTPUT_FILES
+        value: '40'
+      - key: MAX_UPLOAD_MB
+        value: '100'
+      - key: MAX_METADATA_CACHE_ENTRIES
+        value: '50'
       - key: RATE_LIMIT_MAX_REQUESTS
-        value: '60'
+        value: '45'

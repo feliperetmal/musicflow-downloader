@@ -499,7 +499,9 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
       }
 
       const ownerId = req.auth?.ownerId || 'default';
-      const job = queue.enqueue(parsed.data, ownerId, req.auth?.isAdminProxy);
+      const job = queue.enqueue(parsed.data, ownerId, req.auth?.isAdminProxy, {
+        enforceSingleUserLimit: true,
+      });
       res.status(202).json(serializeJob(job, ownerId));
     } catch (err) {
       next(err);
@@ -511,6 +513,13 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
       const parsed = BatchJobsBodySchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: parsed.error.issues[0]?.message || 'Lista de tarefas inválida.' });
+        return;
+      }
+
+      if (parsed.data.jobs.length > config.maxBatchJobs) {
+        res.status(400).json({
+          error: `Limite atual do servidor: até ${config.maxBatchJobs} músicas por lote ZIP. Selecione até ${config.maxBatchJobs} faixas por vez para garantir estabilidade.`,
+        });
         return;
       }
 

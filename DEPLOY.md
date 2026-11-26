@@ -1,60 +1,73 @@
-# MusicFlow Downloader 4.1 — Guia de Produção, Segurança e Hospedagem Cloud
+# MusicFlow Downloader 4.1 — Guia de Produção (Render Free) e Hospedagem
 
-Este guia documenta a arquitetura de produção do **MusicFlow Downloader 4.1**, eliminando completamente a dependência do computador local (`localhost:4000`) e qualquer configuração manual por visitantes.
+Este guia documenta a hospedagem gratuita do backend do **MusicFlow Downloader** no **Render Free (`plan: free`)** integrado ao frontend estático no **GitHub Pages**, com otimizações para 512 MB de RAM e 0.1 vCPU e documentação honesta de todas as limitações do plano gratuito.
 
 ---
 
 ## 1. Arquitetura de Produção
 
 - **Frontend (GitHub Pages — Estático HTTPS)**: `https://feliperetmal.github.io/musicflow-downloader/`
-  - Usa exclusivamente a variável de build `NEXT_PUBLIC_API_URL` (definida pelo administrador no GitHub Actions).
-  - Nenhum segredo administrativo (`WORKER_API_SECRET`, `SPOTIFY_CLIENT_SECRET`, `SESSION_SECRET`) é exposto ao navegador ou salvo em `localStorage`.
-- **Backend Worker (Docker HTTPS em Cloud/VPS)**: Node.js 20 + FFmpeg + FFprobe + `yt-dlp`.
-  - Sessões individuais de clientes assinadas com HMAC-SHA256 (`POST /auth/session`, TTL 2h com rotação automática).
+  - Usa exclusivamente a variável pública de build `NEXT_PUBLIC_API_URL` (configurada no GitHub Actions).
+  - Nenhum segredo administrativo (`WORKER_API_SECRET`, `SPOTIFY_CLIENT_SECRET`, `SESSION_SECRET`, `ENCRYPTION_KEY`) é exposto ao navegador ou salvo em `localStorage`.
+- **Backend Worker (Docker HTTPS no Render Free)**: Node.js 20 + FFmpeg + FFprobe + `yt-dlp`.
+  - Sessões individuais assinadas com HMAC-SHA256 (`POST /auth/session`, TTL 2h com rotação automática).
   - Isolamento estrito por usuário (`ownerId`) em uploads, jobs, SSE, downloads e ZIPs.
-  - Tickets temporários assinados (HMAC, TTL 30 min) para downloads diretos compatíveis com **iPhone Safari** sem expor tokens permanentes em query strings.
-  - Tokens OAuth do Spotify persistidos com criptografia **AES-256-GCM** e escrita atômica em disco.
-  - CORS estrito somente para a origem configurada em `CORS_ORIGIN` (`https://feliperetmal.github.io`), sem confiança no sufixo `.github.io` para autenticação.
+  - Tickets temporários assinados (HMAC, TTL 30 min) para downloads diretos compatíveis com **iPhone Safari** sem expor credenciais em query strings.
+  - Otimizado para **512 MB RAM / 0.1 vCPU**: `WORKER_CONCURRENCY=1`, `FFMPEG_THREADS=1`, `TEMP_FILE_TTL_MINUTES=30`, `NODE_OPTIONS=--max-old-space-size=384`, cache LRU limitado (`MAX_METADATA_CACHE_ENTRIES=50`), limpeza automática de saídas excedentes (`MAX_STORED_OUTPUT_FILES=40`) e limite seguro de lote (`MAX_BATCH_JOBS=50`).
 
 ---
 
-## 2. Comparativo de Hospedagem Econômica para o Backend (Docker + FFmpeg)
+## 2. Limitações Reais do Render Free (Leia Antes de Usar)
 
-| Provedor | Plano Recomendado | Custo Mensal | CPU / RAM | Armazenamento | Observações |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Render.com** (`render.yaml` pronto) | Free (testes) / Starter (produção) | \$0 (hiberna após 15 min) / **\$7/mês** | 0.5 vCPU / 512 MB RAM | Disco efêmero | Deploy em 1 clique via `render.yaml`, HTTPS automático, `/ready` nativo. |
-| **Railway.app** | Hobby | **\$5/mês** (créditos incluídos) | Sob demanda até 8 GB RAM | Disco efêmero ou volume | Excelente para picos de FFmpeg e builds Docker automáticos via GitHub. |
-| **Fly.io** | Shared CPU 1x + 512 MB | **~US\$ 3,50–5,50/mês** | 1 shared vCPU / 512 MB | Volume opcional (1 GB grátis/barato) | Baixa latência (região `gru` São Paulo disponível), HTTPS automático. |
-| **Hetzner Cloud VPS** | CX22 (ou CPX11) | **~€3,79/mês (~R\$ 24)** | 2 vCPU / 4 GB RAM | 40 GB SSD NVMe + 20 TB tráfego | Melhor custo-benefício para playlists grandes (200–1.000 músicas) e volume persistente. |
+O arquivo `render.yaml` está configurado exclusivamente com **`plan: free`** (US\$ 0/mês, sem contratação automática de plano pago):
+
+| Recurso | Limite no Render Free | Impacto Real no MusicFlow |
+| :--- | :--- | :--- |
+| **Memória RAM / CPU** | **512 MB RAM / 0.1 vCPU** | Processamento em fila de 1 tarefa por vez (`WORKER_CONCURRENCY=1`, `FFMPEG_THREADS=1`), mantendo a qualidade solicitada (MP3/MP4) sem causar queda por falta de memória (OOM). Lotes ZIP são limitados a **50 faixas por vez** (`MAX_BATCH_JOBS=50`). |
+| **Horas Gratuitas** | **750 horas/mês** por workspace | Suficiente para 1 serviço web rodando durante todo o mês (não adicione outros serviços no mesmo workspace). |
+| **Hibernação (*Spin-down*)** | **Após 15 minutos** sem tráfego HTTP | O serviço hiberna automaticamente. A próxima requisição acorda o container em **~50–60 segundos** (*cold start*). O frontend já faz retry automático em `502/503/504` e avisa quando o servidor está acordando. |
+| **Armazenamento Efêmero** | **Sem disco persistente** | **Todo arquivo local é apagado** quando o container hiberna, reinicia ou faz redeploy. Isso significa que **sessões Spotify salvas em disco (`.spotify-sessions.json`), jobs em andamento e arquivos temporários são perdidos após hibernação/reinício**, exigindo novo clique em **Conectar Spotify** (sem prometer continuidade após reinício sem banco externo). |
+| **Cartão de Crédito** | **Não exigido inicialmente** no Render Free | Se os limites mensais (horas gratuitas ou banda) forem excedidos sem cartão cadastrado, o Render suspende o serviço em vez de cobrar. *Nota:* em alguns casos específicos de verificação anti-abuso de conta, o provedor pode solicitar validação de identidade/cartão; caso ocorra, veja as alternativas abaixo. |
 
 ---
 
-## 3. Passo a Passo Completo de Deploy (Render — Mais Rápido)
+## 3. Passo a Passo — Importar o Blueprint no Render Free
 
-### Passo 3.1: Publicar o Backend Docker no Render
-1. Acesse [dashboard.render.com/blueprints](https://dashboard.render.com/blueprints) e conecte o repositório `feliperetmal/musicflow-downloader`.
-2. O Render lerá automaticamente o arquivo `render.yaml` na raiz do repositório.
-3. Preencha as 2 variáveis marcadas como privadas no painel do Render:
-   - `SPOTIFY_CLIENT_SECRET`: *(obtido no Spotify Developer Dashboard do app `24`)*
-   - `SPOTIFY_REDIRECT_URI`: `https://<SEU-SERVICO>.onrender.com/auth/spotify/callback`
-4. Clique em **Apply** e aguarde o build do container Docker terminar.
-5. Verifique os endpoints de saúde no navegador:
+### Passo 3.1: Criar o Backend via Blueprint (`render.yaml`)
+1. Acesse [dashboard.render.com/blueprints](https://dashboard.render.com/blueprints) e faça login com sua conta GitHub.
+2. Clique em **New Blueprint Instance** e selecione o repositório `feliperetmal/musicflow-downloader` (branch `main`).
+3. Confirme na tela de revisão que o serviço `musicflow-worker` aparece no plano **`Free` (\$0/month)** (não altere para Starter).
+4. Preencha apenas as 2 variáveis marcadas como `sync: false`:
+   - `SPOTIFY_CLIENT_SECRET`: *(cole o Client Secret privado do app `24` no Spotify Developer Dashboard)*
+   - `SPOTIFY_REDIRECT_URI`: `https://<SEU-SERVICO>.onrender.com/auth/spotify/callback` *(ajuste `<SEU-SERVICO>` para o subdomínio atribuído pelo Render, ex.: `musicflow-worker.onrender.com`)*
+5. Clique em **Apply** e aguarde a compilação do `Dockerfile` (pode levar 3–5 minutos no primeiro build).
+6. Confirme que o backend responde em HTTPS:
    - `https://<SEU-SERVICO>.onrender.com/health`
    - `https://<SEU-SERVICO>.onrender.com/ready`
 
 ### Passo 3.2: Cadastrar a Redirect URI no Spotify Developer Dashboard
 1. Acesse [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) e abra o aplicativo **`24`** (`c18da041f1b648ed9fdec51b82717160`).
-2. Em **Settings → Redirect URIs**, deixe cadastrado exatamente:
+2. Em **Settings → Redirect URIs**, cadastre exatamente:
    - `https://<SEU-SERVICO>.onrender.com/auth/spotify/callback` *(Produção HTTPS)*
    - `http://127.0.0.1:8888/callback` *(Desenvolvimento local)*
 3. Clique em **Save**.
-4. **Atenção ao Development Mode:** Enquanto o aplicativo estiver em Development Mode no Spotify, adicione os e-mails das contas Spotify autorizadas em **Settings → User Management**.
+4. Enquanto o app estiver em **Development Mode**, certifique-se de que seu e-mail Spotify esteja listado em **Settings → User Management**.
 
-### Passo 3.3: Conectar o Frontend (GitHub Pages) ao Backend HTTPS
+### Passo 3.3: Conectar o GitHub Pages ao Backend HTTPS
 1. No GitHub, abra `feliperetmal/musicflow-downloader` → **Settings → Secrets and variables → Actions**.
-2. Na aba **Variables** (recomendado para URLs públicas), clique em **New repository variable**:
+2. Na aba **Variables**, clique em **New repository variable**:
    - **Name:** `NEXT_PUBLIC_API_URL`
-   - **Value:** `https://<SEU-SERVICO>.onrender.com` *(sem barra final)*
-3. Execute o workflow **CI & Deploy MusicFlow to GitHub Pages** (na aba **Actions → Run workflow**) ou faça um `git push` na branch `main`.
-4. O workflow executa typecheck, testes, compilação estática, auditoria de segurança do bundle (impedindo vazamento de segredos ou `localhost:4000`) e publica em:
-   `https://feliperetmal.github.io/musicflow-downloader/`
+   - **Value:** `https://<SEU-SERVICO>.onrender.com` *(sem barra `/` no final)*
+3. Acesse a aba **Actions** → **CI & Deploy MusicFlow to GitHub Pages** → **Run workflow** (branch `main`).
+4. Aguarde o deploy concluir e acesse: `https://feliperetmal.github.io/musicflow-downloader/`.
+
+---
+
+## 4. Alternativas de Hospedagem (Caso Precise de Persistência ou Sem Hibernação)
+
+| Provedor | Custo | Recursos | Diferencial |
+| :--- | :--- | :--- | :--- |
+| **Render Free** *(padrão no `render.yaml`)* | **\$0/mês** | 512 MB RAM / 0.1 vCPU | Gratuito sem cartão inicial; hiberna em 15 min e tem disco efêmero. |
+| **Oracle Cloud Always Free (ARM)** | **\$0/mês** *(exige cartão p/ validação)* | Até 4 OCPU / 24 GB RAM / 200 GB disco | Disco persistente real e sem hibernação, mas exige cartão na criação da conta. |
+| **Railway.app (Hobby)** | **\$5/mês** | CPU/RAM sob demanda | Sem hibernação; bom para picos de FFmpeg. |
+| **Hetzner Cloud VPS (CX22)** | **~€3,79/mês (~R\$ 24)** | 2 vCPU / 4 GB RAM / 40 GB SSD | Disco persistente real (sessões Spotify preservadas por até 180 dias) e suporte completo a playlists de 500–1.000 músicas. |

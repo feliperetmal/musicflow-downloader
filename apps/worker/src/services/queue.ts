@@ -39,6 +39,14 @@ export class ForbiddenResourceError extends Error {
   }
 }
 
+export class TooManyJobsError extends Error {
+  readonly statusCode = 429;
+  constructor(message = 'Limite de downloads simultâneos atingido. Aguarde a conclusão dos atuais.') {
+    super(message);
+    this.name = 'TooManyJobsError';
+  }
+}
+
 class TransientError extends Error {
   constructor(message: string) {
     super(message);
@@ -100,9 +108,25 @@ export class ConversionQueue {
       }
     }
 
+    await this.pruneExcessOutputs();
     await cleanupExpiredFiles(dirs.uploads, this.config.jobTtlMs);
     await cleanupExpiredFiles(dirs.outputs, this.config.jobTtlMs);
     await cleanupExpiredFiles(dirs.scratch, 15 * 60 * 1000);
+  }
+
+  private async pruneExcessOutputs(): Promise<void> {
+    const maxOutputs = Math.max(5, this.config.maxStoredOutputFiles);
+    const completedWithFiles = Array.from(this.jobs.values())
+      .filter((r) => r.job.status === 'completed' && r.outputPath)
+      .sort((a, b) => Date.parse(a.job.updatedAt) - Date.parse(b.job.updatedAt));
+
+    const excess = completedWithFiles.length - maxOutputs;
+    if (excess <= 0) return;
+
+    for (const rec of completedWithFiles.slice(0, excess)) {
+      await safeUnlink(rec.outputPath);
+      rec.outputPath = undefined;
+    }
   }
 
   async registerUpload(
@@ -174,7 +198,12 @@ export class ConversionQueue {
     return rec;
   }
 
-  enqueue(request: ConversionJobRequest, ownerId = 'default', isAdminProxy = false): ConversionJob {
+  enqueue(
+    request: ConversionJobRequest,
+    ownerId = 'default',
+    isAdminProxy = false,
+    options: { enforceSingleUserLimit?: boolean } = {},
+  ): ConversionJob {
     if (request.sourceType === 'upload') {
       const upload = request.uploadId ? this.uploads.get(request.uploadId) : undefined;
       if (!upload) {
@@ -191,12 +220,14 @@ export class ConversionQueue {
       (outputFormat === 'mp4' ? 'MP4' : `${request.bitrate} kbps`);
 
     // Prevent duplicate concurrent jobs ONLY for the same owner + source + format + quality
+    let activeForOwner = 0;
     for (const rec of this.jobs.values()) {
       if (rec.ownerId !== ownerId) continue;
       const isActive = ['queued', 'downloading', 'converting', 'tagging', 'retrying'].includes(
         rec.job.status,
       );
       if (!isActive) continue;
+      activeForOwner++;
       const sameSource =
         rec.request.sourceType === request.sourceType &&
         rec.request.youtubeVideoId === request.youtubeVideoId &&
@@ -206,6 +237,16 @@ export class ConversionQueue {
       if (sameSource && rec.job.outputFormat === outputFormat && rec.job.qualityLabel === qualityLabel) {
         return { ...rec.job };
       }
+    }
+
+    if (
+      options.enforceSingleUserLimit &&
+      !isAdminProxy &&
+      activeForOwner >= this.config.maxActiveDownloadsPerUser
+    ) {
+      throw new TooManyJobsError(
+        `Limite de ${this.config.maxActiveDownloadsPerUser} download(s) simultâneo(s) atingido. Aguarde concluir para iniciar o próximo.`,
+      );
     }
 
     const id = crypto.randomUUID();
@@ -458,6 +499,7 @@ export class ConversionQueue {
           outputFilename,
           outputSizeBytes: stat.size,
         });
+        void this.pruneExcessOutputs();
 
         log('info', 'Conversão concluída', {
           jobId: rec.job.id,

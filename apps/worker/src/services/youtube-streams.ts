@@ -1030,6 +1030,7 @@ export class YouTubeStreamService {
         ? 'bestaudio[ext=m4a][abr<=160]/bestaudio[ext=m4a]/bestaudio'
         : `bestvideo[height<=${maxH}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=${maxH}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${maxH}]+bestaudio/best[height<=${maxH}]`;
 
+    const lowMemoryMode = this.config.concurrency <= 1;
     const args = [
       ...ytdlp.baseArgs,
       '--js-runtimes',
@@ -1037,11 +1038,11 @@ export class YouTubeStreamService {
       '--ffmpeg-location',
       this.config.ffmpegPath,
       '--concurrent-fragments',
-      '8',
+      lowMemoryMode ? '2' : '8',
       '--buffer-size',
-      '64K',
+      lowMemoryMode ? '32K' : '64K',
       '--http-chunk-size',
-      '10M',
+      lowMemoryMode ? '2M' : '10M',
       '--no-warnings',
       '--no-playlist',
       '--no-part',

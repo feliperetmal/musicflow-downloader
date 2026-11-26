@@ -254,4 +254,44 @@ describe('Worker API & Real FFmpeg Integration', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain('confirmar');
   });
+
+  it('enforces maxBatchJobs and maxActiveDownloadsPerUser limits for low-resource Render Free mode', async () => {
+    const lowResConfig = loadConfig({
+      ...process.env,
+      TEMP_DIR: path.join(tmpRoot, 'worker-free-tmp'),
+      WORKER_API_SECRET: secret,
+      WORKER_CONCURRENCY: '1',
+      FFMPEG_THREADS: '1',
+      TEMP_FILE_TTL_MINUTES: '30',
+      MAX_ACTIVE_DOWNLOADS_PER_USER: '1',
+      MAX_BATCH_JOBS: '2',
+      MAX_STORED_OUTPUT_FILES: '5',
+      MAX_METADATA_CACHE_ENTRIES: '10',
+    });
+    await ensureTempDirectories(lowResConfig);
+    const freeCtx = createWorkerApp(lowResConfig);
+    try {
+      const sess = await request(freeCtx.app).post('/auth/session');
+      const token = sess.body.token as string;
+
+      // Batch exceeding MAX_BATCH_JOBS=2 must be rejected cleanly with HTTP 400
+      const batchTooBig = await request(freeCtx.app)
+        .post('/jobs/batch')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          jobs: [1, 2, 3].map((n) => ({
+            sourceType: 'authorized_url',
+            authorizedAudioUrl: `https://example.com/a${n}.wav`,
+            userConfirmedAuthorization: true,
+            bitrate: 192,
+            metadata: { title: `Track ${n}`, artist: 'QA' },
+          })),
+        });
+
+      expect(batchTooBig.status).toBe(400);
+      expect(batchTooBig.body.error).toContain('2 músicas por lote');
+    } finally {
+      await freeCtx.queue.shutdown();
+    }
+  });
 });

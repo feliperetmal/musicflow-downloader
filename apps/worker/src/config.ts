@@ -21,6 +21,10 @@ export interface WorkerConfig {
   maxDurationSeconds: number;
   jobTtlMs: number;
   maxJobRetries: number;
+  maxActiveDownloadsPerUser: number;
+  maxBatchJobs: number;
+  maxStoredOutputFiles: number;
+  maxMetadataCacheEntries: number;
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
   ffmpegPath: string;
@@ -146,6 +150,10 @@ export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
     maxDurationSeconds: parsePositiveInt(source.MAX_DURATION_SECONDS, 1800),
     jobTtlMs: jobTtlMinutes * 60 * 1000,
     maxJobRetries: Math.min(parsePositiveInt(source.MAX_JOB_RETRIES, 2), 5),
+    maxActiveDownloadsPerUser: Math.min(parsePositiveInt(source.MAX_ACTIVE_DOWNLOADS_PER_USER, 10), 50),
+    maxBatchJobs: Math.min(parsePositiveInt(source.MAX_BATCH_JOBS, 1000), 1000),
+    maxStoredOutputFiles: Math.min(parsePositiveInt(source.MAX_STORED_OUTPUT_FILES, 200), 1000),
+    maxMetadataCacheEntries: Math.min(parsePositiveInt(source.MAX_METADATA_CACHE_ENTRIES, 100), 500),
     rateLimitWindowMs: parsePositiveInt(source.RATE_LIMIT_WINDOW_MS, 60_000),
     rateLimitMaxRequests: parsePositiveInt(source.RATE_LIMIT_MAX_REQUESTS, 60),
     ffmpegPath: source.FFMPEG_PATH || (typeof ffmpegStatic === 'string' ? ffmpegStatic : 'ffmpeg'),
