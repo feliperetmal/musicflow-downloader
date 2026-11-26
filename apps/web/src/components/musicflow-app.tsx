@@ -36,22 +36,35 @@ import { Header } from './header';
 import { JobManager, type HistoryRecord } from './job-manager';
 import { MediaResultCard } from './media-result-card';
 import { ToastStack, type ToastMessage, type ToastType } from './notifications';
-import { ServerSettingsDialog } from './server-settings-dialog';
 import { UploadConverter } from './upload-converter';
 import {
+  checkBackendHealth,
   clearSpotifySession,
   clientFetch,
-  getDownloadUrl,
-  getEffectiveWorkerUrl,
-  getEventSourceUrl,
+  getApiEndpoint,
+  getJobDownloadUrl,
   getSpotifySessionId,
-  isGitHubPagesHost,
+  isBackendAvailable,
+  isDirectBackendMode,
+  saveClientSessionToken,
   saveSpotifySessionId,
-  testWorkerConnection,
+  streamSseJson,
 } from '@/lib/api-client';
 
 const HISTORY_STORAGE_KEY = 'musicflow-conversion-history-v2';
 const ACTIVE_BATCH_STORAGE_KEY = 'musicflow-active-zip-batch-v1';
+const LAST_COLLECTION_STORAGE_KEY = 'musicflow-last-collection-v1';
+
+function formatUserFriendlyError(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : '';
+  if (
+    !raw ||
+    /failed to fetch|load failed|networkerror|network request failed|abort/i.test(raw)
+  ) {
+    return 'Serviço temporariamente indisponível. Tente novamente em instantes.';
+  }
+  return raw;
+}
 
 export function MusicFlowApp() {
   const [linkInput, setLinkInput] = React.useState('');
@@ -70,8 +83,6 @@ export function MusicFlowApp() {
   const [history, setHistory] = React.useState<HistoryRecord[]>([]);
   const [toasts, setToasts] = React.useState<ToastMessage[]>([]);
   const [showUploadDrawer, setShowUploadDrawer] = React.useState(false);
-  const [showServerSettings, setShowServerSettings] = React.useState(false);
-  const [serverConnected, setServerConnected] = React.useState(false);
   const [spotifyAuth, setSpotifyAuth] = React.useState<SpotifyAuthStatus | null>(null);
   const [zipBatchTarget, setZipBatchTarget] = React.useState<{
     id: string;
@@ -80,8 +91,8 @@ export function MusicFlowApp() {
     status: 'running' | 'downloading_zip' | 'completed' | 'cancelled';
   } | null>(null);
 
-  const eventSourcesRef = React.useRef<Map<string, EventSource>>(new Map());
-  const analyzeStreamRef = React.useRef<EventSource | null>(null);
+  const eventSourcesRef = React.useRef<Map<string, { close: () => void }>>(new Map());
+  const analyzeStreamRef = React.useRef<{ close: () => void } | null>(null);
   const autoDownloadedIdsRef = React.useRef<Set<string>>(new Set());
   const autoZipTriggeredRef = React.useRef<Set<string>>(new Set());
   const jobFormatKeyRef = React.useRef<Map<string, string>>(new Map());
@@ -107,35 +118,24 @@ export function MusicFlowApp() {
     }, 5000);
   }, []);
 
-  const checkServerStatus = React.useCallback(async () => {
-    const workerUrl = getEffectiveWorkerUrl();
-    if (workerUrl) {
-      const res = await testWorkerConnection();
-      setServerConnected(res.ok);
-    } else if (typeof window !== 'undefined' && !window.location.hostname.includes('github.io')) {
-      setServerConnected(true);
-    } else {
-      setServerConnected(false);
-    }
-  }, []);
-
   const loadSpotifyStatus = React.useCallback((specificSessionId?: string) => {
+    if (!isBackendAvailable()) return;
     const sid = specificSessionId || getSpotifySessionId();
     const query = sid ? `?sessionId=${encodeURIComponent(sid)}` : '';
     clientFetch(`/auth/spotify/status${query}`)
-      .then((r) => r.json())
-      .then((data: SpotifyAuthStatus) => setSpotifyAuth(data))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: SpotifyAuthStatus | null) => {
+        if (data) setSpotifyAuth(data);
+      })
       .catch(() => {});
   }, []);
 
   const handleSpotifyLogin = React.useCallback(async () => {
-    const workerUrl = getEffectiveWorkerUrl();
-    if (!workerUrl && isGitHubPagesHost()) {
-      setShowServerSettings(true);
+    if (!isBackendAvailable()) {
       notify(
-        'info',
-        'Configuração do Servidor',
-        'Conecte o MusicFlow ao seu Worker (local ou nuvem) para autenticar no Spotify.',
+        'error',
+        'Serviço indisponível',
+        'O serviço de autenticação está temporariamente indisponível. Tente novamente em instantes.',
       );
       return;
     }
@@ -147,19 +147,18 @@ export function MusicFlowApp() {
           window.location.pathname,
         )}&frontendUrl=${encodeURIComponent(frontendUrl)}`,
       );
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.authorizeUrl) {
         window.location.href = data.authorizeUrl;
       } else {
-        notify('error', 'Login Spotify', data.error || 'Não foi possível gerar URL de login.');
+        notify('error', 'Login Spotify', data.error || 'Não foi possível iniciar o login com o Spotify.');
       }
-    } catch {
+    } catch (err) {
       notify(
         'error',
         'Login Spotify',
-        'Erro de conexão com o Worker. Verifique se o servidor está ativo nas configurações.',
+        formatUserFriendlyError(err, 'Não foi possível conectar ao Spotify no momento.'),
       );
-      setShowServerSettings(true);
     }
   }, [notify]);
 
@@ -200,6 +199,19 @@ export function MusicFlowApp() {
       // Ignore
     }
 
+    try {
+      const savedCollection = window.localStorage.getItem(LAST_COLLECTION_STORAGE_KEY);
+      if (savedCollection) {
+        const parsed = JSON.parse(savedCollection) as CollectionResult;
+        if (parsed?.items?.length > 0 && parsed.canonicalUrl) {
+          setCollection(parsed);
+          setSelectedIds(new Set(parsed.items.map((i) => i.id)));
+        }
+      }
+    } catch {
+      // Ignore malformed cached collection
+    }
+
     const params = new URLSearchParams(window.location.search);
     const spHandoff = params.get('spotifyHandoff') || params.get('handoff');
     if (spHandoff) {
@@ -209,17 +221,27 @@ export function MusicFlowApp() {
         body: JSON.stringify({ handoff: spHandoff }),
       })
         .then((r) => r.json())
-        .then((data: { sessionId?: string; error?: string }) => {
-          if (data.sessionId) {
-            saveSpotifySessionId(data.sessionId);
-            notify('success', 'Spotify conectado', 'Sessão persistente ativa com sucesso!');
-            loadSpotifyStatus(data.sessionId);
-          } else {
-            notify('error', 'Falha no login Spotify', data.error || 'Sessão expirada.');
-          }
-        })
+        .then(
+          (data: {
+            sessionId?: string;
+            clientToken?: string;
+            expiresAt?: string;
+            error?: string;
+          }) => {
+            if (data.clientToken) {
+              saveClientSessionToken(data.clientToken, data.expiresAt);
+            }
+            if (data.sessionId) {
+              saveSpotifySessionId(data.sessionId);
+              notify('success', 'Spotify conectado', 'Sua conta foi conectada com sucesso.');
+              loadSpotifyStatus(data.sessionId);
+            } else {
+              notify('error', 'Login Spotify', data.error || 'Sessão expirada. Tente novamente.');
+            }
+          },
+        )
         .catch(() => {
-          notify('error', 'Falha no login Spotify', 'Erro de rede ao validar sessão.');
+          notify('error', 'Login Spotify', 'Não foi possível validar sua sessão. Tente novamente.');
         })
         .finally(() => {
           window.history.replaceState({}, '', window.location.pathname);
@@ -234,10 +256,29 @@ export function MusicFlowApp() {
       window.history.replaceState({}, '', window.location.pathname);
     }
 
-    checkServerStatus();
+    // Silent internal health monitor for automatic reconnection if backend recovers
+    let wasUnhealthy = false;
+    let healthTimer: ReturnType<typeof setInterval> | null = null;
+    if (isBackendAvailable()) {
+      void checkBackendHealth().then((status) => {
+        if (!status.ok) {
+          wasUnhealthy = true;
+          healthTimer = setInterval(() => {
+            void checkBackendHealth().then((retryStatus) => {
+              if (retryStatus.ok && wasUnhealthy) {
+                wasUnhealthy = false;
+                if (healthTimer) clearInterval(healthTimer);
+                loadSpotifyStatus();
+              }
+            });
+          }, 15_000);
+        }
+      });
+    }
 
     const sources = eventSourcesRef.current;
     return () => {
+      if (healthTimer) clearInterval(healthTimer);
       analyzeStreamRef.current?.close();
       for (const es of sources.values()) {
         es.close();
@@ -245,6 +286,16 @@ export function MusicFlowApp() {
       sources.clear();
     };
   }, [loadSpotifyStatus, notify]);
+
+  React.useEffect(() => {
+    try {
+      if (collection && collection.items.length > 0 && collection.items.length <= 1000) {
+        window.localStorage.setItem(LAST_COLLECTION_STORAGE_KEY, JSON.stringify(collection));
+      }
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [collection]);
 
   React.useEffect(() => {
     try {
@@ -265,7 +316,7 @@ export function MusicFlowApp() {
     if (autoDownloadedIdsRef.current.has(job.id)) return;
     autoDownloadedIdsRef.current.add(job.id);
 
-    const downloadUrl = getDownloadUrl(`/jobs/${encodeURIComponent(job.id)}/download`);
+    const downloadUrl = getJobDownloadUrl(job.id, job.downloadTicket);
 
     const a = document.createElement('a');
     a.href = downloadUrl;
@@ -338,28 +389,27 @@ export function MusicFlowApp() {
     (jobId: string, autoDownloadOnComplete: boolean) => {
       if (eventSourcesRef.current.has(jobId)) return;
 
-      const es = new EventSource(
-        getEventSourceUrl(`/jobs/${encodeURIComponent(jobId)}/events`),
-      );
-      eventSourcesRef.current.set(jobId, es);
-
-      es.onmessage = (event) => {
-        try {
-          const job = JSON.parse(event.data) as ConversionJob;
-          upsertJob(job, autoDownloadOnComplete);
-          if (['completed', 'failed', 'cancelled'].includes(job.status)) {
-            es.close();
+      const stream = streamSseJson<ConversionJob>(
+        `/jobs/${encodeURIComponent(jobId)}/events`,
+        {},
+        {
+          onMessage: (job) => {
+            upsertJob(job, autoDownloadOnComplete);
+            if (['completed', 'failed', 'cancelled'].includes(job.status)) {
+              stream.close();
+              eventSourcesRef.current.delete(jobId);
+            }
+          },
+          onError: () => {
+            stream.close();
             eventSourcesRef.current.delete(jobId);
-          }
-        } catch {
-          // Ignore malformed frame
-        }
-      };
-
-      es.onerror = () => {
-        es.close();
-        eventSourcesRef.current.delete(jobId);
-      };
+          },
+          onDone: () => {
+            eventSourcesRef.current.delete(jobId);
+          },
+        },
+      );
+      eventSourcesRef.current.set(jobId, stream);
     },
     [upsertJob],
   );
@@ -382,14 +432,10 @@ export function MusicFlowApp() {
       return;
     }
 
-    const workerUrl = getEffectiveWorkerUrl();
-    if (!workerUrl && isGitHubPagesHost()) {
-      setShowServerSettings(true);
-      notify(
-        'info',
-        'Configuração do Servidor',
-        'Para processar links no GitHub Pages, conecte o site ao seu Worker.',
-      );
+    if (!isBackendAvailable()) {
+      const msg = 'Serviço temporariamente indisponível. Tente novamente em instantes.';
+      setAnalysisError(msg);
+      notify('error', 'Serviço indisponível', msg);
       return;
     }
 
@@ -397,53 +443,60 @@ export function MusicFlowApp() {
     setAnalyzing(true);
     setLoadingProgress({ loaded: 0, total: 0, stage: 'Analisando link...' });
 
-    // Use real-time SSE stream for Spotify playlists/albums to show "50 de 213..."
+    // Use real-time SSE stream over fetch() (headers sent safely, no tokens in query string)
     if (parsed.platform === 'spotify') {
       await new Promise<void>((resolve) => {
-        const es = new EventSource(
-          getEventSourceUrl('/analyze/stream', { url: rawUrl.trim() }),
+        const stream = streamSseJson<PlaylistProgressEvent>(
+          '/analyze/stream',
+          { url: rawUrl.trim() },
+          {
+            onMessage: (payload) => {
+              if (payload.type === 'progress') {
+                setLoadingProgress({
+                  loaded: payload.loaded,
+                  total: payload.total,
+                  stage: payload.stage,
+                });
+              } else if (payload.type === 'complete' && payload.collection) {
+                setCollection(payload.collection);
+                setSelectedIds(new Set(payload.collection.items.map((i) => i.id)));
+                stream.close();
+                analyzeStreamRef.current = null;
+                setAnalyzing(false);
+                setLoadingProgress(null);
+                resolve();
+              } else if (payload.type === 'error') {
+                setAnalysisError(payload.error || 'Não foi possível consultar o Spotify.');
+                notify('error', 'Falha no Spotify', payload.error || 'Não foi possível consultar o Spotify.');
+                stream.close();
+                analyzeStreamRef.current = null;
+                setAnalyzing(false);
+                setLoadingProgress(null);
+                resolve();
+              }
+            },
+            onError: (err) => {
+              stream.close();
+              analyzeStreamRef.current = null;
+              setAnalyzing(false);
+              setLoadingProgress(null);
+              const friendly = formatUserFriendlyError(
+                err,
+                'Conexão interrompida ao consultar o Spotify.',
+              );
+              setAnalysisError(friendly);
+              notify('error', 'Falha ao analisar link', friendly);
+              resolve();
+            },
+            onDone: () => {
+              analyzeStreamRef.current = null;
+              setAnalyzing(false);
+              setLoadingProgress(null);
+              resolve();
+            },
+          },
         );
-        analyzeStreamRef.current = es;
-
-        es.onmessage = (event) => {
-          try {
-            const payload = JSON.parse(event.data) as PlaylistProgressEvent;
-            if (payload.type === 'progress') {
-              setLoadingProgress({
-                loaded: payload.loaded,
-                total: payload.total,
-                stage: payload.stage,
-              });
-            } else if (payload.type === 'complete' && payload.collection) {
-              setCollection(payload.collection);
-              setSelectedIds(new Set(payload.collection.items.map((i) => i.id)));
-              es.close();
-              analyzeStreamRef.current = null;
-              setAnalyzing(false);
-              setLoadingProgress(null);
-              resolve();
-            } else if (payload.type === 'error') {
-              setAnalysisError(payload.error || 'Erro ao consultar Spotify.');
-              notify('error', 'Falha no Spotify', payload.error || 'Erro ao consultar Spotify.');
-              es.close();
-              analyzeStreamRef.current = null;
-              setAnalyzing(false);
-              setLoadingProgress(null);
-              resolve();
-            }
-          } catch {
-            // ignore malformed frame
-          }
-        };
-
-        es.onerror = () => {
-          es.close();
-          analyzeStreamRef.current = null;
-          setAnalyzing(false);
-          setLoadingProgress(null);
-          setAnalysisError('Conexão interrompida ao consultar Spotify.');
-          resolve();
-        };
+        analyzeStreamRef.current = stream;
       });
       return;
     }
@@ -454,7 +507,7 @@ export function MusicFlowApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: rawUrl.trim() }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || 'Não foi possível analisar este link.');
       }
@@ -463,7 +516,7 @@ export function MusicFlowApp() {
       setCollection(result);
       setSelectedIds(new Set(result.items.map((i) => i.id)));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erro ao analisar o link.';
+      const msg = formatUserFriendlyError(err, 'Erro ao analisar o link.');
       setAnalysisError(msg);
       notify('error', 'Falha ao analisar link', msg);
     } finally {
@@ -649,6 +702,33 @@ export function MusicFlowApp() {
     async (jobIds: string[], zipName?: string) => {
       if (jobIds.length === 0) return;
       try {
+        // Prefer direct server-streamed ZIP with short-lived signed ticket (Safari iOS / low-RAM safe)
+        if (isDirectBackendMode()) {
+          const prepRes = await clientFetch('/jobs/zip/prepare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobIds, zipName }),
+          });
+          if (prepRes.ok) {
+            const prep = (await prepRes.json()) as { downloadPath: string; totalFiles: number };
+            const directUrl = getApiEndpoint(prep.downloadPath);
+            const a = document.createElement('a');
+            a.href = directUrl;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.download = `${sanitizeFilename(zipName || 'musicflow-playlist', 'musicflow-playlist')}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            notify(
+              'success',
+              'ZIP pronto!',
+              `Download iniciado (${prep.totalFiles} música(s)). Se não iniciar no Safari, clique em "Baixar ZIP pronto".`,
+            );
+            return;
+          }
+        }
+
         const res = await clientFetch('/jobs/zip', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -672,7 +752,7 @@ export function MusicFlowApp() {
         notify(
           'error',
           'Erro ao baixar ZIP',
-          err instanceof Error ? err.message : 'Tente novamente.',
+          formatUserFriendlyError(err, 'Tente novamente.'),
         );
       }
     },
@@ -967,28 +1047,7 @@ export function MusicFlowApp() {
         spotifyAuth={spotifyAuth}
         onSpotifyLogin={handleSpotifyLogin}
         onSpotifyLogout={handleSpotifyLogout}
-        serverConnected={serverConnected}
-        onOpenServerSettings={() => setShowServerSettings(true)}
       />
-
-      {isGitHubPagesHost() && !serverConnected && (
-        <div className="bg-gradient-to-r from-emerald-950/80 via-slate-900 to-purple-950/70 border-b border-emerald-500/20 px-4 py-2 text-xs text-emerald-200">
-          <div className="mx-auto max-w-5xl flex flex-wrap items-center justify-between gap-2">
-            <span>
-              💡 <strong>Modo GitHub Pages:</strong> Conecte o frontend ao seu Worker (local no PC ou na nuvem) para realizar conversões e login do Spotify.
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setShowServerSettings(true)}
-              className="h-6 text-[11px] shrink-0 border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-            >
-              Conectar Servidor
-            </Button>
-          </div>
-        </div>
-      )}
 
       <main className="mx-auto max-w-5xl space-y-8 px-4 py-8 sm:px-6 sm:py-12">
         {/* YTSave-style Centered Hero */}
@@ -1160,6 +1219,7 @@ export function MusicFlowApp() {
             }}
             itemJobs={itemJobs}
             onDownloadZip={handleDownloadZip}
+            onSpotifyLogin={handleSpotifyLogin}
             onNotify={notify}
           />
         )}
@@ -1220,15 +1280,6 @@ export function MusicFlowApp() {
           )}
         </section>
       </main>
-
-      <ServerSettingsDialog
-        isOpen={showServerSettings}
-        onClose={() => setShowServerSettings(false)}
-        onSaved={() => {
-          checkServerStatus();
-          loadSpotifyStatus();
-        }}
-      />
 
       <ToastStack
         toasts={toasts}

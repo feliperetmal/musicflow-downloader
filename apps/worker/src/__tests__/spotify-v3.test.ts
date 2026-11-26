@@ -24,6 +24,7 @@ describe('Spotify OAuth PKCE, Feb 2026 /items Pagination & Restriction Handling'
 
     expect(authorizeUrl).toContain('code_challenge_method=S256');
     expect(authorizeUrl).toContain('redirect_uri=http%3A%2F%2F127.0.0.1%3A8888%2Fcallback');
+    expect(authorizeUrl).not.toContain('show_dialog=true');
 
     await expect(
       auth.handleCallback({ code: 'abc', state: 'forged-state' }),

@@ -25,7 +25,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const res = await proxyToWorker('/diagnostics');
+    const forwardHeaders: Record<string, string> = {};
+    const adminHeader = req.headers.get('x-admin-secret') || process.env.ADMIN_DIAGNOSTICS_SECRET;
+    if (adminHeader) {
+      forwardHeaders['x-admin-secret'] = adminHeader;
+    }
+    const res = await proxyToWorker('/diagnostics', { headers: forwardHeaders });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch {

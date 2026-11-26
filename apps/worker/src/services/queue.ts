@@ -20,13 +20,23 @@ import { MediaHttpError, YouTubeStreamService } from './youtube-streams.js';
 
 interface InternalUploadRecord extends UploadMetadata {
   filePath: string;
+  ownerId: string;
 }
 
 interface InternalJobRecord {
   job: ConversionJob;
   request: ConversionJobRequest;
+  ownerId: string;
   outputPath?: string;
   abortController: AbortController;
+}
+
+export class ForbiddenResourceError extends Error {
+  readonly statusCode = 403;
+  constructor(message = 'Você não tem permissão para acessar este recurso.') {
+    super(message);
+    this.name = 'ForbiddenResourceError';
+  }
 }
 
 class TransientError extends Error {
@@ -95,7 +105,13 @@ export class ConversionQueue {
     await cleanupExpiredFiles(dirs.scratch, 15 * 60 * 1000);
   }
 
-  async registerUpload(filePath: string, originalName: string, mimeType: string, sizeBytes: number): Promise<UploadMetadata> {
+  async registerUpload(
+    filePath: string,
+    originalName: string,
+    mimeType: string,
+    sizeBytes: number,
+    ownerId = 'default',
+  ): Promise<UploadMetadata> {
     const signature = await validateUploadedMediaFile(filePath, originalName);
     if (!signature.valid) {
       await safeUnlink(filePath);
@@ -133,6 +149,7 @@ export class ConversionQueue {
       codec: probe.codec,
       createdAt: new Date().toISOString(),
       filePath,
+      ownerId,
     };
 
     this.uploads.set(uploadId, record);
@@ -148,15 +165,23 @@ export class ConversionQueue {
     };
   }
 
-  getUpload(uploadId: string): InternalUploadRecord | undefined {
-    return this.uploads.get(uploadId);
+  getUpload(uploadId: string, ownerId?: string, isAdminProxy = false): InternalUploadRecord | undefined {
+    const rec = this.uploads.get(uploadId);
+    if (!rec) return undefined;
+    if (ownerId && !isAdminProxy && rec.ownerId !== ownerId) {
+      throw new ForbiddenResourceError();
+    }
+    return rec;
   }
 
-  enqueue(request: ConversionJobRequest): ConversionJob {
+  enqueue(request: ConversionJobRequest, ownerId = 'default', isAdminProxy = false): ConversionJob {
     if (request.sourceType === 'upload') {
       const upload = request.uploadId ? this.uploads.get(request.uploadId) : undefined;
       if (!upload) {
         throw new Error('Arquivo de upload não encontrado ou expirado. Envie o arquivo novamente.');
+      }
+      if (!isAdminProxy && upload.ownerId !== ownerId) {
+        throw new ForbiddenResourceError('Você não tem permissão para converter este arquivo.');
       }
     }
 
@@ -165,8 +190,9 @@ export class ConversionQueue {
       request.qualityLabel ||
       (outputFormat === 'mp4' ? 'MP4' : `${request.bitrate} kbps`);
 
-    // Prevent duplicate concurrent jobs for the exact same source + format + quality
+    // Prevent duplicate concurrent jobs ONLY for the same owner + source + format + quality
     for (const rec of this.jobs.values()) {
+      if (rec.ownerId !== ownerId) continue;
       const isActive = ['queued', 'downloading', 'converting', 'tagging', 'retrying'].includes(
         rec.job.status,
       );
@@ -203,6 +229,7 @@ export class ConversionQueue {
     this.jobs.set(id, {
       job,
       request: { ...request, outputFormat },
+      ownerId,
       abortController: new AbortController(),
     });
     this.pendingQueue.push(id);
@@ -215,26 +242,44 @@ export class ConversionQueue {
     return this.youtubeStreams.getExtractorStatus();
   }
 
-  getJob(jobId: string): ConversionJob | undefined {
-    const rec = this.jobs.get(jobId);
-    return rec ? { ...rec.job } : undefined;
+  getJobOwnerId(jobId: string): string | undefined {
+    return this.jobs.get(jobId)?.ownerId;
   }
 
-  listJobs(): ConversionJob[] {
+  getJob(jobId: string, ownerId?: string, isAdminProxy = false): ConversionJob | undefined {
+    const rec = this.jobs.get(jobId);
+    if (!rec) return undefined;
+    if (ownerId && !isAdminProxy && rec.ownerId !== ownerId) {
+      throw new ForbiddenResourceError();
+    }
+    return { ...rec.job };
+  }
+
+  listJobs(ownerId?: string, isAdminProxy = false): ConversionJob[] {
     return Array.from(this.jobs.values())
+      .filter((r) => !ownerId || isAdminProxy || r.ownerId === ownerId)
       .map((r) => ({ ...r.job }))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  getJobOutputFile(jobId: string): { filePath: string; filename: string; outputFormat: OutputFormat } | undefined {
+  getJobOutputFile(
+    jobId: string,
+    ownerId?: string,
+    isAdminProxy = false,
+  ): { filePath: string; filename: string; outputFormat: OutputFormat; ownerId: string } | undefined {
     const rec = this.jobs.get(jobId);
-    if (!rec || rec.job.status !== 'completed' || !rec.outputPath || !rec.job.outputFilename) {
+    if (!rec) return undefined;
+    if (ownerId && !isAdminProxy && rec.ownerId !== ownerId) {
+      throw new ForbiddenResourceError();
+    }
+    if (rec.job.status !== 'completed' || !rec.outputPath || !rec.job.outputFilename) {
       return undefined;
     }
     return {
       filePath: rec.outputPath,
       filename: rec.job.outputFilename,
       outputFormat: rec.job.outputFormat,
+      ownerId: rec.ownerId,
     };
   }
 
@@ -253,9 +298,12 @@ export class ConversionQueue {
     };
   }
 
-  async cancelJob(jobId: string): Promise<ConversionJob | undefined> {
+  async cancelJob(jobId: string, ownerId?: string, isAdminProxy = false): Promise<ConversionJob | undefined> {
     const rec = this.jobs.get(jobId);
     if (!rec) return undefined;
+    if (ownerId && !isAdminProxy && rec.ownerId !== ownerId) {
+      throw new ForbiddenResourceError();
+    }
 
     if (rec.job.status === 'completed' || rec.job.status === 'failed' || rec.job.status === 'cancelled') {
       return { ...rec.job };
@@ -277,9 +325,12 @@ export class ConversionQueue {
     return { ...rec.job };
   }
 
-  retryJob(jobId: string): ConversionJob | undefined {
+  retryJob(jobId: string, ownerId?: string, isAdminProxy = false): ConversionJob | undefined {
     const rec = this.jobs.get(jobId);
     if (!rec) return undefined;
+    if (ownerId && !isAdminProxy && rec.ownerId !== ownerId) {
+      throw new ForbiddenResourceError();
+    }
     if (!['failed', 'cancelled'].includes(rec.job.status)) {
       return { ...rec.job };
     }
@@ -481,6 +532,9 @@ export class ConversionQueue {
       dlResult = await this.youtubeStreams.downloadFormatToFile({
         videoId: rec.request.youtubeVideoId,
         searchQuery: rec.request.searchQuery,
+        expectedTitle: rec.request.metadata.title,
+        expectedArtist: rec.request.metadata.artist,
+        durationHintSeconds: rec.request.durationHintSeconds,
         itag: rec.request.audioItag,
         kind: 'audio',
         destPath: rawAudioPath,
@@ -575,6 +629,9 @@ export class ConversionQueue {
       await this.youtubeStreams.downloadFormatToFile({
         videoId: rec.request.youtubeVideoId,
         searchQuery: rec.request.searchQuery,
+        expectedTitle: rec.request.metadata.title,
+        expectedArtist: rec.request.metadata.artist,
+        durationHintSeconds: rec.request.durationHintSeconds,
         itag: rec.request.videoItag,
         kind: 'video',
         resolutionHeight,

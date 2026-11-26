@@ -1,121 +1,60 @@
-# MusicFlow Downloader 4.0 — Guia de Produção e Hospedagem
+# MusicFlow Downloader 4.1 — Guia de Produção, Segurança e Hospedagem Cloud
 
-Este guia documenta o passo a passo completo para colocar o **MusicFlow Downloader 4.0** em produção pública na internet com custo zero ou mínimo, suportando computadores, iPhones (iOS Safari) e dispositivos Android.
-
----
-
-## 1. Arquitetura Desacoplada (Frontend no GitHub Pages + Worker Cloud)
-
-```mermaid
-flowchart LR
-    A["Navegador / iPhone / Android<br/>(PWA)"] -->|"HTTPS / CDN"| B["GitHub Pages<br/>(HTML5 / Tailwind / React)"]
-    A -->|"API REST + SSE + CORS"| C["Worker Cloud / Docker<br/>(Node.js 20 + yt-dlp + FFmpeg)"]
-    C -->|"OAuth 2.0 PKCE"| D["Spotify Web API<br/>(Metadados + Capas)"]
-    C -->|"Extração Concorrente"| E["YouTube / CDN<br/>(Node JS Runtime)"]
-```
-
-- **Frontend**: Hospedado no **GitHub Pages** (100% gratuito, CDN global rápida, SSL automático).
-- **Backend Worker**: Hospedado em um container Docker Linux com Node.js 20, Python 3, `yt-dlp` e `ffmpeg`.
-- **Comunicação**: O frontend conversa diretamente com a URL pública do Worker via CORS com suporte nativo a Server-Sent Events (SSE) e streaming de downloads.
+Este guia documenta a arquitetura de produção do **MusicFlow Downloader 4.1**, eliminando completamente a dependência do computador local (`localhost:4000`) e qualquer configuração manual por visitantes.
 
 ---
 
-## 2. Passo a Passo — Publicar o Frontend no GitHub Pages
+## 1. Arquitetura de Produção
 
-### Passo 2.1: Habilitar o GitHub Pages no Repositório
-1. Abra seu repositório no GitHub.
-2. Acesse **Settings** > **Pages** (no menu lateral esquerdo).
-3. Na seção **Build and deployment** > **Source**, selecione:
-   - **GitHub Actions** (em vez de *Deploy from a branch*).
-
-### Passo 2.2: Configurar Secrets no GitHub (Opcional, mas recomendado)
-1. No repositório, vá em **Settings** > **Secrets and variables** > **Actions**.
-2. Clique em **New repository secret**.
-3. Adicione a variável:
-   - **Nome:** `NEXT_PUBLIC_WORKER_URL`
-   - **Valor:** `https://seu-worker.onrender.com` (a URL HTTPS do seu worker após o deploy da Seção 3).
-
-### Passo 2.3: Disparar o Deploy
-- Qualquer `git push` na branch `main` ou `master` acionará automaticamente o workflow `.github/workflows/deploy.yml`.
-- O workflow executa testes, checagem de tipos, compilação estática (`npm run build:static`) com geração automática do arquivo `.nojekyll` e publica seu site em:
-  `https://<seu-usuario>.github.io/<nome-do-repositorio>/`
+- **Frontend (GitHub Pages — Estático HTTPS)**: `https://feliperetmal.github.io/musicflow-downloader/`
+  - Usa exclusivamente a variável de build `NEXT_PUBLIC_API_URL` (definida pelo administrador no GitHub Actions).
+  - Nenhum segredo administrativo (`WORKER_API_SECRET`, `SPOTIFY_CLIENT_SECRET`, `SESSION_SECRET`) é exposto ao navegador ou salvo em `localStorage`.
+- **Backend Worker (Docker HTTPS em Cloud/VPS)**: Node.js 20 + FFmpeg + FFprobe + `yt-dlp`.
+  - Sessões individuais de clientes assinadas com HMAC-SHA256 (`POST /auth/session`, TTL 2h com rotação automática).
+  - Isolamento estrito por usuário (`ownerId`) em uploads, jobs, SSE, downloads e ZIPs.
+  - Tickets temporários assinados (HMAC, TTL 30 min) para downloads diretos compatíveis com **iPhone Safari** sem expor tokens permanentes em query strings.
+  - Tokens OAuth do Spotify persistidos com criptografia **AES-256-GCM** e escrita atômica em disco.
+  - CORS estrito somente para a origem configurada em `CORS_ORIGIN` (`https://feliperetmal.github.io`), sem confiança no sufixo `.github.io` para autenticação.
 
 ---
 
-## 3. Passo a Passo — Hospedagem do Worker Cloud
+## 2. Comparativo de Hospedagem Econômica para o Backend (Docker + FFmpeg)
 
-O Worker executa processamento real de áudio e vídeo com FFmpeg e `yt-dlp`. Por isso, requer um ambiente com suporte a binários do sistema (disponibilizado pelo `Dockerfile` pronto no projeto).
-
-### Opção A — Render.com (Recomendado para início gratuito ou \$7/mês)
-1. Crie uma conta gratuita em [render.com](https://render.com).
-2. Clique em **New +** > **Web Service**.
-3. Conecte seu repositório do GitHub.
-4. Escolha a opção **Docker** (o Render detectará automaticamente o `Dockerfile` na raiz).
-5. Configure as Variáveis de Ambiente no painel do Render:
-   - `PORT`: `4000`
-   - `NODE_ENV`: `production`
-   - `CORS_ORIGIN`: `https://<seu-usuario>.github.io,*`
-   - `FRONTEND_BASE_URL`: `https://<seu-usuario>.github.io/<nome-do-repositorio>`
-   - `SPOTIFY_CLIENT_ID`: `c18da041f1b648ed9fdec51b82717160`
-   - `SPOTIFY_CLIENT_SECRET`: *(seu segredo do painel Spotify Developer)*
-   - `SPOTIFY_REDIRECT_URI`: `https://<nome-do-seu-app>.onrender.com/auth/spotify/callback`
-   - `WORKER_API_SECRET`: *(opcional para proteger acessos externos diretos)*
-6. Clique em **Create Web Service**.
-7. Após o deploy, teste a saúde acessando: `https://<nome-do-seu-app>.onrender.com/ready`.
-
-### Opção B — Railway.app (\$5/mês de créditos)
-1. Crie uma conta em [railway.app](https://railway.app).
-2. Clique em **New Project** > **Deploy from GitHub repo**.
-3. O Railway compilará o `Dockerfile` automaticamente.
-4. Em **Settings** > **Networking**, clique em **Generate Domain** para obter a URL pública HTTPS.
-5. Em **Variables**, configure as mesmas variáveis descritas na Opção A.
-
-### Opção C — Hetzner Cloud VPS (€3.79 / ~R\$ 22 ao mês — Máxima Performance)
-Para downloads de playlists com mais de 500 faixas em segundos com banda ilimitada de 20 TB:
-1. Contrate uma instância CPX11 ou CX22 na [hetzner.com](https://www.hetzner.com/cloud).
-2. Conecte via SSH e instale o Docker:
-   ```bash
-   curl -fsSL https://get.docker.com | sh
-   ```
-3. Clone seu repositório e inicie o container:
-   ```bash
-   docker build -t musicflow-worker .
-   docker run -d \
-     --name musicflow-worker \
-     --restart unless-stopped \
-     -p 4000:4000 \
-     --env-file .env \
-     musicflow-worker
-   ```
-4. Aponte um domínio com Nginx/Caddy para gerar SSL Let's Encrypt gratuito.
+| Provedor | Plano Recomendado | Custo Mensal | CPU / RAM | Armazenamento | Observações |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Render.com** (`render.yaml` pronto) | Free (testes) / Starter (produção) | \$0 (hiberna após 15 min) / **\$7/mês** | 0.5 vCPU / 512 MB RAM | Disco efêmero | Deploy em 1 clique via `render.yaml`, HTTPS automático, `/ready` nativo. |
+| **Railway.app** | Hobby | **\$5/mês** (créditos incluídos) | Sob demanda até 8 GB RAM | Disco efêmero ou volume | Excelente para picos de FFmpeg e builds Docker automáticos via GitHub. |
+| **Fly.io** | Shared CPU 1x + 512 MB | **~US\$ 3,50–5,50/mês** | 1 shared vCPU / 512 MB | Volume opcional (1 GB grátis/barato) | Baixa latência (região `gru` São Paulo disponível), HTTPS automático. |
+| **Hetzner Cloud VPS** | CX22 (ou CPX11) | **~€3,79/mês (~R\$ 24)** | 2 vCPU / 4 GB RAM | 40 GB SSD NVMe + 20 TB tráfego | Melhor custo-benefício para playlists grandes (200–1.000 músicas) e volume persistente. |
 
 ---
 
-## 4. Configuração do Spotify Developer Dashboard para Produção
+## 3. Passo a Passo Completo de Deploy (Render — Mais Rápido)
 
-Para permitir login permanente de qualquer dispositivo:
-1. Acesse o [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-2. Abra a aplicação correspondente ao Client ID `c18da041f1b648ed9fdec51b82717160`.
-3. Clique em **Settings**.
-4. Em **Redirect URIs**, adicione:
-   - Desenvolvimento local: `http://127.0.0.1:8888/callback`
-   - Produção: `https://<sua-url-do-worker>/auth/spotify/callback`
-5. Salve as alterações (**Save**).
+### Passo 3.1: Publicar o Backend Docker no Render
+1. Acesse [dashboard.render.com/blueprints](https://dashboard.render.com/blueprints) e conecte o repositório `feliperetmal/musicflow-downloader`.
+2. O Render lerá automaticamente o arquivo `render.yaml` na raiz do repositório.
+3. Preencha as 2 variáveis marcadas como privadas no painel do Render:
+   - `SPOTIFY_CLIENT_SECRET`: *(obtido no Spotify Developer Dashboard do app `24`)*
+   - `SPOTIFY_REDIRECT_URI`: `https://<SEU-SERVICO>.onrender.com/auth/spotify/callback`
+4. Clique em **Apply** e aguarde o build do container Docker terminar.
+5. Verifique os endpoints de saúde no navegador:
+   - `https://<SEU-SERVICO>.onrender.com/health`
+   - `https://<SEU-SERVICO>.onrender.com/ready`
 
----
+### Passo 3.2: Cadastrar a Redirect URI no Spotify Developer Dashboard
+1. Acesse [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard) e abra o aplicativo **`24`** (`c18da041f1b648ed9fdec51b82717160`).
+2. Em **Settings → Redirect URIs**, deixe cadastrado exatamente:
+   - `https://<SEU-SERVICO>.onrender.com/auth/spotify/callback` *(Produção HTTPS)*
+   - `http://127.0.0.1:8888/callback` *(Desenvolvimento local)*
+3. Clique em **Save**.
+4. **Atenção ao Development Mode:** Enquanto o aplicativo estiver em Development Mode no Spotify, adicione os e-mails das contas Spotify autorizadas em **Settings → User Management**.
 
-## 5. Persistência de Sessão e Segurança
-
-- **Criptografia AES-256-GCM:** Os tokens de acesso e de atualização do Spotify nunca são salvos em texto puro. O worker utiliza criptografia AES-256-GCM com chave derivada em repouso.
-- **Renovação Proativa:** Tokens com validade inferior a 5 minutos são renovados automaticamente em segundo plano antes de expirar.
-- **Deduplicação de Requisições de Refresh (Mutex):** Múltiplas requisições paralelas reutilizam a mesma promessa de refresh, impedindo invalidação acidental de tokens rotacionados.
-- **Duração de 180 Dias:** O cookie e a chave de sessão local são persistidos por 6 meses (limite máximo permitido pela política oficial do Spotify em 2026).
-- **Recuperação Automática:** Caso o usuário feche a aba, desligue a tela do celular ou atualize a página, a sessão permanece ativa imediatamente ao retornar.
-
----
-
-## 6. Compatibilidade Mobile e iOS Safari
-
-1. **PWA (Progressive Web App):** O site inclui `manifest.json`, ícone de alta resolução e tema escuro `#0a0d14`. No iOS Safari, toque em **Compartilhar** > **Adicionar à Tela de Início** para utilizá-lo como um aplicativo nativo em tela cheia.
-2. **Download Nativo no iPhone:** O iOS Safari bloqueia disparos de download automatizados via iframes ocultos. O MusicFlow inclui botões diretos de download (`target="_blank" download`) que acionam a folha de download nativa do sistema iOS, salvando o arquivo diretamente no aplicativo Arquivos / Downloads.
-3. **Persistência de Lote ZIP:** Downloads em lote (ex.: 200 faixas) salvam o progresso em `localStorage`. Caso a tela do celular bloqueie momentaneamente durante a conversão, o progresso é restaurado automaticamente assim que o navegador reabre.
+### Passo 3.3: Conectar o Frontend (GitHub Pages) ao Backend HTTPS
+1. No GitHub, abra `feliperetmal/musicflow-downloader` → **Settings → Secrets and variables → Actions**.
+2. Na aba **Variables** (recomendado para URLs públicas), clique em **New repository variable**:
+   - **Name:** `NEXT_PUBLIC_API_URL`
+   - **Value:** `https://<SEU-SERVICO>.onrender.com` *(sem barra final)*
+3. Execute o workflow **CI & Deploy MusicFlow to GitHub Pages** (na aba **Actions → Run workflow**) ou faça um `git push` na branch `main`.
+4. O workflow executa typecheck, testes, compilação estática, auditoria de segurança do bundle (impedindo vazamento de segredos ou `localhost:4000`) e publica em:
+   `https://feliperetmal.github.io/musicflow-downloader/`

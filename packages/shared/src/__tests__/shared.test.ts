@@ -13,6 +13,7 @@ import {
   parseMediaLink,
   sanitizeAsciiFilename,
   sanitizeFilename,
+  validateExternalTrackMatch,
 } from '../index.js';
 import type { MediaItem } from '../types.js';
 
@@ -166,5 +167,26 @@ describe('exporters & validation', () => {
     expect(matches).toHaveLength(1);
     expect(matches[0].itemId).toBe('sp:1');
     expect(matches[0].uploadId).toBe('u-1');
+  });
+
+  it('strictly validates external track matches by title, artist, duration and rejects covers/loops', () => {
+    const valid = validateExternalTrackMatch(
+      { title: 'Blinding Lights', artist: 'The Weeknd', durationSeconds: 200 },
+      [
+        { id: 'bad1', title: 'Blinding Lights (Karaoke Version)', channel: 'Karaoke Channel', durationSeconds: 200 },
+        { id: 'bad2', title: 'The Weeknd - Blinding Lights (1 Hour Loop)', channel: 'Loops', durationSeconds: 3600 },
+        { id: 'good1', title: 'The Weeknd - Blinding Lights (Official Audio)', channel: 'The Weeknd', durationSeconds: 202 },
+      ],
+    );
+    expect(valid.matched?.id).toBe('good1');
+
+    const rejected = validateExternalTrackMatch(
+      { title: 'Blinding Lights', artist: 'The Weeknd', durationSeconds: 200 },
+      [
+        { id: 'wrong-dur', title: 'The Weeknd - Blinding Lights', channel: 'The Weeknd', durationSeconds: 600 },
+        { id: 'wrong-song', title: 'Totally Different Song', channel: 'Other Artist', durationSeconds: 200 },
+      ],
+    );
+    expect(rejected.matched).toBeNull();
   });
 });

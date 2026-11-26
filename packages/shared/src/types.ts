@@ -227,6 +227,7 @@ export interface ConversionJob {
   error?: string;
   outputFilename?: string;
   outputSizeBytes?: number;
+  downloadTicket?: string;
   sourceBitrateKbps?: number;
   bitrateNote?: string;
   createdAt: string;

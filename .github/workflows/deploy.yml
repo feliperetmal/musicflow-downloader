@@ -5,8 +5,8 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
-      worker_url:
-        description: 'URL pública do worker (ex: https://worker.seudominio.com)'
+      api_url:
+        description: 'URL pública HTTPS do backend (ex: https://musicflow-worker.onrender.com)'
         required: false
         default: ''
 
@@ -52,8 +52,21 @@ jobs:
         run: npm run build:static
         env:
           STATIC_EXPORT: 'true'
+          NEXT_PUBLIC_STATIC_EXPORT: 'true'
           NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}
-          NEXT_PUBLIC_WORKER_URL: ${{ inputs.worker_url || secrets.NEXT_PUBLIC_WORKER_URL }}
+          NEXT_PUBLIC_API_URL: ${{ inputs.api_url || vars.NEXT_PUBLIC_API_URL || secrets.NEXT_PUBLIC_API_URL || secrets.NEXT_PUBLIC_WORKER_URL }}
+
+      - name: Auditoria de Segurança do Bundle Estático
+        run: |
+          if grep -rn "mf_worker_secret\|NEXT_PUBLIC_WORKER_SECRET\|SPOTIFY_CLIENT_SECRET" apps/web/out; then
+            echo "ERRO DE SEGURANÇA: Referência a segredo administrativo detectada no bundle estático!"
+            exit 1
+          fi
+          if grep -rn "http://localhost:4000" apps/web/out; then
+            echo "ERRO: URL localhost:4000 detectada no bundle de produção!"
+            exit 1
+          fi
+          echo "Auditoria de segurança do bundle aprovada (sem segredos nem localhost:4000)."
 
       - name: Upload de artefato do GitHub Pages
         uses: actions/upload-pages-artifact@v3

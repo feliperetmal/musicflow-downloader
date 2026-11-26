@@ -57,15 +57,106 @@ describe('Worker API & Real FFmpeg Integration', () => {
     expect(parseIso8601Duration('invalid')).toBeUndefined();
   });
 
-  it('enforces worker secret authentication', async () => {
+  it('enforces worker secret authentication and never bypasses via github.io Origin header', async () => {
     const res = await request(ctx.app).get('/jobs');
     expect(res.status).toBe(401);
+
+    // Spoofing disallowed *.github.io Origin is rejected by strict CORS (403)
+    const spoofed = await request(ctx.app)
+      .get('/jobs')
+      .set('Origin', 'https://attacker.github.io');
+    expect(spoofed.status).toBe(403);
+
+    // Even an allowed CORS origin MUST NOT bypass authentication without a valid token
+    const allowedOriginNoAuth = await request(ctx.app)
+      .get('/jobs')
+      .set('Origin', 'http://localhost:3000');
+    expect(allowedOriginNoAuth.status).toBe(401);
 
     const bad = await request(ctx.app).get('/jobs').set('x-worker-secret', 'wrong');
     expect(bad.status).toBe(403);
 
     const ok = await request(ctx.app).get('/jobs').set('x-worker-secret', secret);
     expect(ok.status).toBe(200);
+  });
+
+  it('isolates jobs per individual client session token and authenticates direct downloads via short-lived tickets', async () => {
+    const sessA = await request(ctx.app).post('/auth/session');
+    const sessB = await request(ctx.app).post('/auth/session');
+    expect(sessA.status).toBe(200);
+    expect(sessB.status).toBe(200);
+    const tokenA = sessA.body.token as string;
+    const tokenB = sessB.body.token as string;
+
+    const upA = await request(ctx.app)
+      .post('/uploads')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .attach('file', sampleWavPath);
+    expect(upA.status).toBe(201);
+
+    // User B cannot convert User A's upload
+    const hijackJob = await request(ctx.app)
+      .post('/jobs')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        sourceType: 'upload',
+        uploadId: upA.body.uploadId,
+        userConfirmedAuthorization: true,
+        bitrate: 192,
+        metadata: { title: 'Hijack', artist: 'B' },
+      });
+    expect(hijackJob.status).toBe(403);
+
+    // User A starts conversion
+    const jobA = await request(ctx.app)
+      .post('/jobs')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({
+        sourceType: 'upload',
+        uploadId: upA.body.uploadId,
+        userConfirmedAuthorization: true,
+        bitrate: 192,
+        metadata: { title: 'Privada A', artist: 'User A' },
+      });
+    expect(jobA.status).toBe(202);
+    const jobIdA = jobA.body.id as string;
+
+    // User B cannot view User A's job
+    const spyJob = await request(ctx.app)
+      .get(`/jobs/${jobIdA}`)
+      .set('Authorization', `Bearer ${tokenB}`);
+    expect(spyJob.status).toBe(403);
+
+    // Wait for completion
+    let finalJob = jobA.body;
+    for (let i = 0; i < 40; i++) {
+      const poll = await request(ctx.app)
+        .get(`/jobs/${jobIdA}`)
+        .set('Authorization', `Bearer ${tokenA}`);
+      finalJob = poll.body;
+      if (finalJob.status === 'completed' || finalJob.status === 'failed') break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    expect(finalJob.status).toBe('completed');
+    expect(finalJob.downloadTicket).toBeTruthy();
+
+    // Download using short-lived signed ticket (without Authorization header, e.g. Safari <a download>)
+    const ticketDl = await request(ctx.app)
+      .get(`/jobs/${jobIdA}/download?ticket=${encodeURIComponent(finalJob.downloadTicket)}`);
+    expect(ticketDl.status).toBe(200);
+    expect(ticketDl.headers['content-type']).toContain('audio/mpeg');
+
+    // Prepare ZIP with User A and download via ticket
+    const prepZip = await request(ctx.app)
+      .post('/jobs/zip/prepare')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ jobIds: [jobIdA], zipName: 'Minha Lista A' });
+    expect(prepZip.status).toBe(200);
+    expect(prepZip.body.downloadPath).toContain('/jobs/zip/download?');
+
+    const zipTicketDl = await request(ctx.app).get(prepZip.body.downloadPath);
+    expect(zipTicketDl.status).toBe(200);
+    expect(zipTicketDl.headers['content-type']).toContain('application/zip');
   });
 
   it('uploads real WAV, converts to MP3 with ID3 tags, downloads MP3 and bundles ZIP', async () => {

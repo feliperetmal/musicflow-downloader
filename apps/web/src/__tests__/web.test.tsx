@@ -19,7 +19,7 @@ describe('Web helpers & YTSave-style MusicFlowApp UI', () => {
     expect(formatBytes(3 * 1024 * 1024)).toBe('3.00 MB');
   });
 
-  it('renders YTSave-style centered URL input, Colar and Baixar buttons without technical jargon', () => {
+  it('renders YTSave-style centered URL input, Colar and Baixar buttons without technical jargon or server config UI', () => {
     render(<MusicFlowApp />);
 
     expect(screen.getByRole('heading', { name: 'MusicFlow Downloader' })).toBeTruthy();
@@ -27,6 +27,10 @@ describe('Web helpers & YTSave-style MusicFlowApp UI', () => {
     expect(screen.getByRole('button', { name: 'Colar' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Baixar' })).toBeTruthy();
     expect(screen.queryByText(/Worker FFmpeg/i)).toBeNull();
+    expect(screen.queryByText(/Configuração do Servidor/i)).toBeNull();
+    expect(screen.queryByText(/Chave Secreta/i)).toBeNull();
+    expect(screen.queryByText(/Localhost/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Servidor/i })).toBeNull();
   });
 
   it('renders only real available formats in MediaResultCard and no fake buttons when unavailable', () => {

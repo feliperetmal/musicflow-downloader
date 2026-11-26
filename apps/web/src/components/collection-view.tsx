@@ -41,7 +41,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { formatDuration } from '@/lib/format';
-import { getDownloadUrl } from '@/lib/api-client';
+import { getJobDownloadUrl } from '@/lib/api-client';
 import type { ToastType } from './notifications';
 
 export interface ActiveZipBatchState {
@@ -69,6 +69,7 @@ interface CollectionViewProps {
   onInspectSingleItem: (item: MediaItem) => Promise<void>;
   itemJobs: Record<string, ConversionJob>;
   onDownloadZip: (jobIds: string[], zipName?: string) => Promise<void>;
+  onSpotifyLogin?: () => Promise<void>;
   onNotify: (type: ToastType, title: string, description?: string) => void;
 }
 
@@ -89,6 +90,7 @@ export function CollectionView({
   onInspectSingleItem,
   itemJobs,
   onDownloadZip,
+  onSpotifyLogin,
   onNotify,
 }: CollectionViewProps) {
   const [search, setSearch] = React.useState('');
@@ -378,14 +380,16 @@ export function CollectionView({
                 Abrir no {collection.platform === 'spotify' ? 'Spotify' : 'YouTube'}
               </a>
 
-              {collection.requiresSpotifyLogin && (
-                <a
-                  href="/api/auth/spotify/login"
+              {collection.requiresSpotifyLogin && onSpotifyLogin && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void onSpotifyLogin()}
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white hover:bg-emerald-500 transition-colors"
                 >
                   <LogIn className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   Conectar com Spotify
-                </a>
+                </Button>
               )}
             </div>
           </div>
@@ -781,7 +785,7 @@ export function CollectionView({
 
                     {job?.status === 'completed' && (
                       <a
-                        href={getDownloadUrl(`/jobs/${encodeURIComponent(job.id)}/download`)}
+                        href={getJobDownloadUrl(job.id, job.downloadTicket)}
                         target="_blank"
                         rel="noopener noreferrer"
                         download

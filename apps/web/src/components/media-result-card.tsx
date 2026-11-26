@@ -19,7 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { formatBytes, formatDuration } from '@/lib/format';
-import { getDownloadUrl } from '@/lib/api-client';
+import { getJobDownloadUrl } from '@/lib/api-client';
 
 interface MediaResultCardProps {
   item: MediaItem;
@@ -166,7 +166,7 @@ export function MediaResultCard({
                                   </div>
                                 ) : job?.status === 'completed' ? (
                                   <a
-                                    href={getDownloadUrl(`/jobs/${encodeURIComponent(job.id)}/download`)}
+                                    href={getJobDownloadUrl(job.id, job.downloadTicket)}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     download

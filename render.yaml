@@ -1,0 +1,42 @@
+# Render Blueprint — MusicFlow Downloader 4.1 Production Backend (Docker + FFmpeg + yt-dlp)
+# Import this repository in https://dashboard.render.com/blueprints
+services:
+  - type: web
+    name: musicflow-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter # Recommended ($7/mo, always-on, no cold sleep); change to 'free' for testing with spin-down
+    healthCheckPath: /ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: '4000'
+      - key: PUBLIC_APP_URL
+        value: https://feliperetmal.github.io/musicflow-downloader
+      - key: FRONTEND_BASE_URL
+        value: https://feliperetmal.github.io/musicflow-downloader
+      - key: CORS_ORIGIN
+        value: https://feliperetmal.github.io
+      - key: SPOTIFY_CLIENT_ID
+        value: c18da041f1b648ed9fdec51b82717160
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false # Set privately in Render Dashboard
+      - key: SPOTIFY_REDIRECT_URI
+        sync: false # Set to https://<your-service>.onrender.com/auth/spotify/callback
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: WORKER_API_SECRET
+        generateValue: true
+      - key: ADMIN_DIAGNOSTICS_SECRET
+        generateValue: true
+      - key: WORKER_CONCURRENCY
+        value: '2'
+      - key: FFMPEG_THREADS
+        value: '2'
+      - key: TEMP_FILE_TTL_MINUTES
+        value: '180'
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: '60'

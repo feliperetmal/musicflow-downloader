@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import ffmpegStatic from 'ffmpeg-static';
@@ -10,6 +11,8 @@ export interface WorkerConfig {
   corsOrigin: string;
   frontendBaseUrl: string;
   workerApiSecret: string;
+  sessionSecret: string;
+  encryptionKey: string;
   adminDiagnosticsSecret: string;
   concurrency: number;
   ffmpegThreads: number;
@@ -86,22 +89,55 @@ export function isPlaceholderSecret(val: string): boolean {
   );
 }
 
+const EPHEMERAL_RUNTIME_SECRET = crypto.randomBytes(32).toString('hex');
+
 export function loadConfig(env?: NodeJS.ProcessEnv): WorkerConfig {
   if (!env) {
     loadRootDotEnvIfPresent();
   }
   const source = env ?? process.env;
+  const nodeEnv = source.NODE_ENV ?? 'development';
   const maxUploadMb = parsePositiveInt(source.MAX_UPLOAD_MB, 200);
-  const jobTtlMinutes = parsePositiveInt(source.JOB_TTL_MINUTES, 60);
+  const jobTtlMinutes = parsePositiveInt(
+    source.JOB_TTL_MINUTES || source.TEMP_FILE_TTL_MINUTES,
+    60,
+  );
   const rawSecret = source.SPOTIFY_CLIENT_SECRET ?? '';
+  const rawWorkerSecret = source.WORKER_API_SECRET ?? '';
+  const workerApiSecret = isPlaceholderSecret(rawWorkerSecret) ? '' : rawWorkerSecret;
+  const rawSessionSecret = source.SESSION_SECRET ?? '';
+  const sessionSecret = !isPlaceholderSecret(rawSessionSecret)
+    ? rawSessionSecret
+    : workerApiSecret || EPHEMERAL_RUNTIME_SECRET;
+  const rawEncryptionKey = source.ENCRYPTION_KEY ?? '';
+  const encryptionKey = !isPlaceholderSecret(rawEncryptionKey)
+    ? rawEncryptionKey
+    : sessionSecret;
+
+  const frontendBaseUrl = (
+    source.FRONTEND_BASE_URL ||
+    source.PUBLIC_APP_URL ||
+    'http://localhost:3000'
+  ).replace(/\/+$/, '');
+
+  let defaultCors = 'http://localhost:3000,http://127.0.0.1:3000';
+  if (nodeEnv === 'production' && frontendBaseUrl) {
+    try {
+      defaultCors = new URL(frontendBaseUrl).origin;
+    } catch {
+      defaultCors = frontendBaseUrl;
+    }
+  }
 
   return {
-    appVersion: source.APP_VERSION ?? '3.0.0',
+    appVersion: source.APP_VERSION ?? '4.1.0',
     port: parsePositiveInt(source.PORT, 4000),
-    nodeEnv: source.NODE_ENV ?? 'development',
-    corsOrigin: source.CORS_ORIGIN ?? 'http://localhost:3000,http://127.0.0.1:3000',
-    frontendBaseUrl: (source.FRONTEND_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, ''),
-    workerApiSecret: source.WORKER_API_SECRET ?? '',
+    nodeEnv,
+    corsOrigin: source.CORS_ORIGIN ?? defaultCors,
+    frontendBaseUrl,
+    workerApiSecret,
+    sessionSecret,
+    encryptionKey,
     adminDiagnosticsSecret: source.ADMIN_DIAGNOSTICS_SECRET ?? '',
     concurrency: Math.min(parsePositiveInt(source.WORKER_CONCURRENCY, 4), 8),
     ffmpegThreads: Math.min(parseNonNegativeInt(source.FFMPEG_THREADS, 0), 16),

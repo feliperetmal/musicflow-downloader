@@ -54,8 +54,9 @@ export class SpotifyAuthService {
 
   private getEncryptionKey(): Buffer {
     const secretSource =
+      this.config.encryptionKey ||
+      this.config.sessionSecret ||
       this.config.workerApiSecret ||
-      this.config.adminDiagnosticsSecret ||
       this.config.spotifyClientId ||
       'musicflow-vault-fallback-secret-2026';
     return crypto.scryptSync(secretSource, 'musicflow-spotify-vault-salt-2026', 32);
@@ -140,9 +141,12 @@ export class SpotifyAuthService {
   private persistSessions(): void {
     try {
       fs.mkdirSync(this.config.tempDir, { recursive: true });
+      const target = this.getSessionsFilePath();
+      const tmp = `${target}.${crypto.randomBytes(6).toString('hex')}.tmp`;
       const payload = JSON.stringify(Array.from(this.sessions.values()));
       const encrypted = this.encryptPayload(payload);
-      fs.writeFileSync(this.getSessionsFilePath(), encrypted, { mode: 0o600 });
+      fs.writeFileSync(tmp, encrypted, { mode: 0o600 });
+      fs.renameSync(tmp, target);
     } catch {
       // Ignore write errors in read-only test envs
     }
@@ -152,12 +156,27 @@ export class SpotifyAuthService {
     if (!rawUrl) return this.config.frontendBaseUrl;
     try {
       const parsed = new URL(rawUrl);
-      if (
-        parsed.hostname === 'localhost' ||
-        parsed.hostname === '127.0.0.1' ||
-        parsed.hostname.endsWith('.github.io') ||
-        parsed.origin === this.config.frontendBaseUrl
-      ) {
+      const allowedOrigins = this.config.corsOrigin
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean);
+
+      let configuredFrontendOrigin = '';
+      try {
+        configuredFrontendOrigin = new URL(this.config.frontendBaseUrl).origin;
+      } catch {
+        // ignore
+      }
+
+      const isLocalDev =
+        this.config.nodeEnv !== 'production' &&
+        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+
+      const isExplicitAllowed =
+        parsed.origin === configuredFrontendOrigin ||
+        allowedOrigins.includes(parsed.origin);
+
+      if (isLocalDev || isExplicitAllowed) {
         return (
           parsed.origin + (parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, ''))
         );
@@ -166,6 +185,11 @@ export class SpotifyAuthService {
       // Ignore invalid URL
     }
     return this.config.frontendBaseUrl;
+  }
+
+  peekFlowFrontendUrl(state?: string): string {
+    if (!state) return this.config.frontendBaseUrl;
+    return this.pendingFlows.get(state)?.frontendUrl || this.config.frontendBaseUrl;
   }
 
   isConfigured(): boolean {
@@ -204,7 +228,6 @@ export class SpotifyAuthService {
       state,
       code_challenge_method: 'S256',
       code_challenge: codeChallenge,
-      show_dialog: 'true',
     });
 
     return {
@@ -287,6 +310,15 @@ export class SpotifyAuthService {
       allowPrivateNetworkFetch: this.config.allowPrivateNetworkFetch,
     });
 
+    if (profileRes.status === 403) {
+      log('warn', 'Usuário Spotify não autorizado no aplicativo em Development Mode', {
+        status: profileRes.status,
+      });
+      throw new Error(
+        'Sua conta Spotify ainda não foi liberada no aplicativo "24" (Development Mode). Peça ao administrador para adicionar seu e-mail no Spotify Developer Dashboard.',
+      );
+    }
+
     let user: SpotifyUserSession['user'] = {
       id: 'spotify-user',
       displayName: 'Usuário Spotify',
@@ -304,6 +336,8 @@ export class SpotifyAuthService {
         product: profile.product,
         country: profile.country,
       };
+    } else {
+      throw new Error(`Não foi possível consultar o perfil do Spotify (HTTP ${profileRes.status}).`);
     }
 
     const sessionId = crypto.randomBytes(32).toString('base64url');
@@ -339,7 +373,7 @@ export class SpotifyAuthService {
     return { handoff, returnTo: flow.returnTo, frontendUrl: flow.frontendUrl };
   }
 
-  consumeHandoff(handoff: string): { sessionId: string; returnTo: string } | null {
+  consumeHandoff(handoff: string): { sessionId: string; returnTo: string; userId: string } | null {
     const entry = this.handoffs.get(handoff);
     this.handoffs.delete(handoff);
     if (!entry || Date.now() - entry.createdAtMs > 90_000) {
@@ -351,7 +385,7 @@ export class SpotifyAuthService {
     }
     session.lastUsedMs = Date.now();
     this.persistSessions();
-    return { sessionId: entry.sessionId, returnTo: entry.returnTo };
+    return { sessionId: entry.sessionId, returnTo: entry.returnTo, userId: session.user.id };
   }
 
   touchSession(sessionId?: string): void {
@@ -536,6 +570,7 @@ export function startLocalSpotifyCallbackServer(
   if (!isLocalCallback) return null;
 
   const server = http.createServer(async (req, res) => {
+    let fallbackBase = config.frontendBaseUrl;
     try {
       const url = new URL(req.url || '/', `http://${redirectUrl.host}`);
       if (url.pathname !== redirectUrl.pathname) {
@@ -547,6 +582,7 @@ export function startLocalSpotifyCallbackServer(
       const code = url.searchParams.get('code') ?? undefined;
       const state = url.searchParams.get('state') ?? undefined;
       const error = url.searchParams.get('error') ?? undefined;
+      fallbackBase = authService.peekFlowFrontendUrl(state).replace(/\/+$/, '');
 
       const { handoff, returnTo, frontendUrl } = await authService.handleCallback({ code, state, error });
       const base = (frontendUrl || config.frontendBaseUrl).replace(/\/+$/, '');
@@ -567,7 +603,7 @@ export function startLocalSpotifyCallbackServer(
       res.statusCode = 302;
       res.setHeader(
         'Location',
-        `${config.frontendBaseUrl}/?spotifyError=${encodeURIComponent(msg)}`,
+        `${fallbackBase}/?spotifyError=${encodeURIComponent(msg)}`,
       );
       res.end();
     }

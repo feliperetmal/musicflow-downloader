@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import type { SpotifyAuthStatus } from '@musicflow/shared';
-import { Activity, AudioWaveform, LogIn, LogOut, Moon, Server, Sun, Upload } from 'lucide-react';
+import { Activity, AudioWaveform, LogIn, LogOut, Moon, Sun, Upload } from 'lucide-react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,8 +14,6 @@ interface HeaderProps {
   spotifyAuth: SpotifyAuthStatus | null;
   onSpotifyLogin: () => Promise<void>;
   onSpotifyLogout: () => Promise<void>;
-  serverConnected?: boolean;
-  onOpenServerSettings?: () => void;
 }
 
 export function Header({
@@ -24,8 +22,6 @@ export function Header({
   spotifyAuth,
   onSpotifyLogin,
   onSpotifyLogout,
-  serverConnected,
-  onOpenServerSettings,
 }: HeaderProps) {
   const { theme, toggleTheme } = useTheme();
 
@@ -69,27 +65,6 @@ export function Header({
               <LogIn className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               <span className="hidden sm:inline">Conectar Spotify</span>
               <span className="sm:hidden">Spotify</span>
-            </Button>
-          )}
-
-          {onOpenServerSettings && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onOpenServerSettings}
-              className="h-8 text-xs relative px-2 sm:px-2.5"
-              title="Configurações do Servidor (Worker)"
-              aria-label="Configurações do Servidor Worker"
-            >
-              <Server className="h-3.5 w-3.5 shrink-0 mr-1 sm:mr-1.5" />
-              <span className="hidden sm:inline">Servidor</span>
-              <span
-                className={`inline-block h-2 w-2 rounded-full ml-1 sm:ml-1.5 ${
-                  serverConnected ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-400'
-                }`}
-                aria-hidden="true"
-              />
             </Button>
           )}
 

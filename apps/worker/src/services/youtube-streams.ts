@@ -3,8 +3,10 @@ import fs from 'node:fs/promises';
 import { Innertube, UniversalCache } from 'youtubei.js';
 import {
   ALLOWED_BITRATES,
+  validateExternalTrackMatch,
   type AvailableFormatOption,
   type BitrateKbps,
+  type ExternalMatchCandidate,
 } from '@musicflow/shared';
 import type { WorkerConfig } from '../config.js';
 import { log } from '../logger.js';
@@ -903,9 +905,75 @@ export class YouTubeStreamService {
     };
   }
 
+  async resolveValidatedMatchVideoId(options: {
+    searchQuery: string;
+    expectedTitle?: string;
+    expectedArtist?: string;
+    durationHintSeconds?: number;
+  }): Promise<string> {
+    const yt = await this.getClient();
+    const search = await yt.search(options.searchQuery, { type: 'video' });
+    const rawVideos = (search.videos ?? []).slice(0, 6) as Array<{
+      id?: string;
+      content_id?: string;
+      title?: { text?: string; toString?: () => string } | string;
+      author?: { name?: string };
+      duration?: { seconds?: number };
+    }>;
+
+    const candidates: ExternalMatchCandidate[] = [];
+    for (const v of rawVideos) {
+      const id = v.id || v.content_id;
+      if (!id) continue;
+      const title =
+        typeof v.title === 'string'
+          ? v.title
+          : v.title?.text || v.title?.toString?.() || '';
+      if (!title) continue;
+      candidates.push({
+        id,
+        title,
+        channel: v.author?.name,
+        durationSeconds: typeof v.duration?.seconds === 'number' ? v.duration.seconds : undefined,
+      });
+    }
+
+    let expectedTitle = options.expectedTitle;
+    let expectedArtist = options.expectedArtist ?? '';
+    if (!expectedTitle && options.searchQuery.includes(' - ')) {
+      const [artistPart, ...titleParts] = options.searchQuery.split(' - ');
+      expectedArtist = artistPart.trim();
+      expectedTitle = titleParts.join(' - ').trim();
+    } else if (!expectedTitle) {
+      expectedTitle = options.searchQuery;
+    }
+
+    const validation = validateExternalTrackMatch(
+      {
+        title: expectedTitle,
+        artist: expectedArtist,
+        durationSeconds: options.durationHintSeconds,
+      },
+      candidates,
+    );
+
+    if (!validation.matched) {
+      throw new MediaHttpError(
+        404,
+        false,
+        `Nenhuma fonte compatível validada (título, artista e duração) encontrada para "${expectedTitle}".`,
+      );
+    }
+
+    return validation.matched.id;
+  }
+
   async downloadFormatToFile(options: {
     videoId?: string;
     searchQuery?: string;
+    expectedTitle?: string;
+    expectedArtist?: string;
+    durationHintSeconds?: number;
     itag?: number;
     kind: 'audio' | 'video';
     resolutionHeight?: number;
@@ -914,19 +982,22 @@ export class YouTubeStreamService {
     signal: AbortSignal;
     onProgress?: (percent: number) => void;
   }): Promise<{ mimeType: string; bitrateKbps?: number; bytesWritten: number }> {
-    const ytdlp = await this.resolveYtDlp();
-    if (ytdlp) {
-      return this.downloadViaYtDlp(ytdlp, options);
-    }
     let resolvedVideoId = options.videoId;
     if (!resolvedVideoId && options.searchQuery) {
-      const yt = await this.getClient();
-      const search = await yt.search(options.searchQuery, { type: 'video' });
-      const first = search.videos?.[0] as { id?: string; content_id?: string } | undefined;
-      resolvedVideoId = first?.id || first?.content_id;
+      resolvedVideoId = await this.resolveValidatedMatchVideoId({
+        searchQuery: options.searchQuery,
+        expectedTitle: options.expectedTitle,
+        expectedArtist: options.expectedArtist,
+        durationHintSeconds: options.durationHintSeconds,
+      });
     }
     if (!resolvedVideoId) {
-      throw new MediaHttpError(404, false, 'Não foi possível localizar mídia correspondente para esta faixa.');
+      throw new MediaHttpError(404, false, 'Não foi possível localizar mídia correspondente validada para esta faixa.');
+    }
+
+    const ytdlp = await this.resolveYtDlp();
+    if (ytdlp) {
+      return this.downloadViaYtDlp(ytdlp, { ...options, videoId: resolvedVideoId });
     }
     return this.downloadViaInnertubeFallback({ ...options, videoId: resolvedVideoId });
   }
