@@ -1,11 +1,12 @@
 'use client';
 
 import * as React from 'react';
-import type { ConversionJob, JobStatus } from '@musicflow/shared';
+import type { ConversionJob, HostedZipResult, JobStatus } from '@musicflow/shared';
 import {
   Archive,
   CheckCircle2,
   Clock,
+  CloudUpload,
   Download,
   History,
   Loader2,
@@ -20,6 +21,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { formatBytes } from '@/lib/format';
 import { getJobDownloadUrl } from '@/lib/api-client';
+import { HostedZipBanner } from './hosted-zip-banner';
 
 export interface HistoryRecord {
   id: string;
@@ -38,6 +40,10 @@ interface JobManagerProps {
   onCancelJob: (jobId: string) => Promise<void>;
   onRetryJob: (jobId: string) => Promise<void>;
   onDownloadZip: (jobIds: string[]) => Promise<void>;
+  uploadingZip?: boolean;
+  onUploadZipToCloud?: (jobIds: string[]) => Promise<void>;
+  hostedZip?: HostedZipResult | null;
+  onLinkCopied?: () => void;
   onClearHistory: () => void;
 }
 
@@ -61,6 +67,10 @@ export function JobManager({
   onCancelJob,
   onRetryJob,
   onDownloadZip,
+  uploadingZip = false,
+  onUploadZipToCloud,
+  hostedZip,
+  onLinkCopied,
   onClearHistory,
 }: JobManagerProps) {
   if (jobs.length === 0 && history.length === 0) {
@@ -88,20 +98,42 @@ export function JobManager({
               </CardDescription>
             </div>
 
-            {completedJobs.length > 1 && (
-              <Button
-                type="button"
-                size="sm"
-                variant="emerald"
-                onClick={() => onDownloadZip(completedJobs.map((j) => j.id))}
-              >
-                <Archive className="h-4 w-4 shrink-0" aria-hidden="true" />
-                Baixar tudo em ZIP ({completedJobs.length})
-              </Button>
+            {completedJobs.length >= 1 && (
+              <div className="flex flex-wrap items-center gap-2">
+                {completedJobs.length > 1 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="emerald"
+                    onClick={() => onDownloadZip(completedJobs.map((j) => j.id))}
+                  >
+                    <Archive className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    Baixar tudo em ZIP ({completedJobs.length})
+                  </Button>
+                )}
+
+                {onUploadZipToCloud && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={uploadingZip}
+                    onClick={() => void onUploadZipToCloud(completedJobs.map((j) => j.id))}
+                  >
+                    {uploadingZip ? (
+                      <Loader2 className="h-4 w-4 animate-spin shrink-0" aria-hidden="true" />
+                    ) : (
+                      <CloudUpload className="h-4 w-4 text-purple-400 shrink-0" aria-hidden="true" />
+                    )}
+                    {uploadingZip ? 'Enviando...' : `Upar ZIP Catbox (${completedJobs.length})`}
+                  </Button>
+                )}
+              </div>
             )}
           </CardHeader>
 
           <CardContent className="space-y-3">
+            {hostedZip && <HostedZipBanner hostedZip={hostedZip} onCopied={onLinkCopied} />}
             {jobs.map((job) => {
               const badge = STATUS_BADGE_MAP[job.status];
               const isActive = ['queued', 'downloading', 'converting', 'tagging', 'retrying'].includes(

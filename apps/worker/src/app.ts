@@ -29,6 +29,10 @@ import { getTempDirectories, safeUnlink } from './services/cleanup.js';
 import { DiagnosticsService } from './services/diagnostics.js';
 import { ConversionQueue } from './services/queue.js';
 import { SpotifyAuthService } from './services/spotify-auth.js';
+import {
+  uploadZipToAnonymousHost,
+  writeZipArchiveToDisk,
+} from './services/zip-uploader.js';
 
 export interface AppContext {
   app: Express;
@@ -44,6 +48,11 @@ const AnalyzeBodySchema = z.object({
 const ZipBodySchema = z.object({
   jobIds: z.array(z.string().uuid()).min(1, 'Selecione pelo menos um arquivo concluído').max(1000),
   zipName: z.string().trim().max(160).optional(),
+});
+
+const ZipUploadBodySchema = ZipBodySchema.extend({
+  provider: z.enum(['auto', 'catbox', 'litterbox']).optional().default('auto'),
+  retention: z.enum(['1h', '12h', '24h', '72h']).optional().default('72h'),
 });
 
 const BatchJobsBodySchema = z.object({
@@ -256,7 +265,7 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
   app.use(['/analyze', '/uploads', '/jobs'], requireAuth);
   app.use('/diagnostics', requireAdminDiagnostics);
   app.use(['/analyze', '/uploads', '/auth/spotify/login'], limiter);
-  app.post(['/jobs', '/jobs/batch', '/jobs/zip', '/jobs/zip/prepare'], limiter);
+  app.post(['/jobs', '/jobs/batch', '/jobs/zip', '/jobs/zip/prepare', '/jobs/zip/upload'], limiter);
 
   app.get('/auth/spotify/login', (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -695,6 +704,52 @@ export function createWorkerApp(config: WorkerConfig): AppContext {
       streamZipArchive(res, files, parsed.data.zipName);
     } catch (err) {
       next(err);
+    }
+  });
+
+  app.post('/jobs/zip/upload', async (req: Request, res: Response, next: NextFunction) => {
+    const scratchZipPath = path.join(dirs.scratch, `${crypto.randomUUID()}.zip`);
+    try {
+      const parsed = ZipUploadBodySchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message || 'Lista de tarefas inválida.' });
+        return;
+      }
+
+      const files = collectOwnedZipFiles(
+        parsed.data.jobIds,
+        req.auth?.ownerId,
+        req.auth?.isAdminProxy,
+      );
+      if (files.length === 0) {
+        res.status(404).json({ error: 'Nenhum arquivo concluído encontrado para enviar.' });
+        return;
+      }
+
+      fs.mkdirSync(dirs.scratch, { recursive: true });
+      const rawZipBase = parsed.data.zipName
+        ? sanitizeFilename(parsed.data.zipName.replace(/\.zip$/i, ''), 'musicflow-playlist')
+        : 'musicflow-playlist';
+      const fileName = `${rawZipBase}.zip`;
+
+      const { sizeBytes } = await writeZipArchiveToDisk(files, scratchZipPath);
+      const uploaded = await uploadZipToAnonymousHost({
+        filePath: scratchZipPath,
+        fileName,
+        sizeBytes,
+        provider: parsed.data.provider,
+        retention: parsed.data.retention,
+        allowPrivateNetworkFetch: config.allowPrivateNetworkFetch,
+      });
+
+      res.json({
+        ...uploaded,
+        fileCount: files.length,
+      });
+    } catch (err) {
+      next(err);
+    } finally {
+      await safeUnlink(scratchZipPath);
     }
   });
 

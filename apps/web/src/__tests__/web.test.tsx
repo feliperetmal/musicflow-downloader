@@ -143,6 +143,17 @@ describe('Web helpers & YTSave-style MusicFlowApp UI', () => {
         onInspectSingleItem={async () => {}}
         itemJobs={{}}
         onDownloadZip={async () => {}}
+        autoUploadZip={true}
+        onToggleAutoUploadZip={() => {}}
+        hostedZip={{
+          url: 'https://files.catbox.moe/sample123.zip',
+          provider: 'catbox',
+          fileName: 'Minha Playlist Mix.zip',
+          sizeBytes: 2048000,
+          fileCount: 2,
+          expiresIn: 'Permanente (Catbox.moe)',
+          copiedToClipboard: true,
+        }}
         onNotify={() => {}}
       />,
     );
@@ -150,6 +161,8 @@ describe('Web helpers & YTSave-style MusicFlowApp UI', () => {
     const hebrewEl = screen.getByText('שלום עולם');
     expect(hebrewEl.getAttribute('dir')).toBe('auto');
     expect(screen.getByText('Página 1 de 2 (65 faixas)')).toBeTruthy();
+    expect(screen.getByText('Auto-upar ZIP (Catbox)')).toBeTruthy();
+    expect(screen.getByText('https://files.catbox.moe/sample123.zip')).toBeTruthy();
 
     // Filter by artist
     const searchInput = screen.getByPlaceholderText('Pesquisar por música ou artista...');

@@ -10,6 +10,7 @@ import {
   type CollectionResult,
   type ConversionJob,
   type ConversionJobRequest,
+  type HostedZipResult,
   type MediaItem,
   type PlaylistProgressEvent,
   type SpotifyAuthStatus,
@@ -37,6 +38,7 @@ import { JobManager, type HistoryRecord } from './job-manager';
 import { MediaResultCard } from './media-result-card';
 import { ToastStack, type ToastMessage, type ToastType } from './notifications';
 import { UploadConverter } from './upload-converter';
+import { copyTextToClipboard } from '@/lib/format';
 import {
   checkBackendHealth,
   clearSpotifySession,
@@ -54,6 +56,7 @@ import {
 const HISTORY_STORAGE_KEY = 'musicflow-conversion-history-v2';
 const ACTIVE_BATCH_STORAGE_KEY = 'musicflow-active-zip-batch-v1';
 const LAST_COLLECTION_STORAGE_KEY = 'musicflow-last-collection-v1';
+const AUTO_UPLOAD_ZIP_STORAGE_KEY = 'musicflow-auto-upload-zip-v1';
 
 function formatUserFriendlyError(err: unknown, fallback: string): string {
   const raw = err instanceof Error ? err.message : '';
@@ -84,6 +87,9 @@ export function MusicFlowApp() {
   const [toasts, setToasts] = React.useState<ToastMessage[]>([]);
   const [showUploadDrawer, setShowUploadDrawer] = React.useState(false);
   const [spotifyAuth, setSpotifyAuth] = React.useState<SpotifyAuthStatus | null>(null);
+  const [autoUploadZip, setAutoUploadZip] = React.useState(false);
+  const [uploadingZip, setUploadingZip] = React.useState(false);
+  const [hostedZip, setHostedZip] = React.useState<HostedZipResult | null>(null);
   const [zipBatchTarget, setZipBatchTarget] = React.useState<{
     id: string;
     title: string;
@@ -195,6 +201,13 @@ export function MusicFlowApp() {
           setZipBatchTarget(parsed);
         }
       }
+    } catch {
+      // Ignore
+    }
+
+    try {
+      const savedAutoUpload = window.localStorage.getItem(AUTO_UPLOAD_ZIP_STORAGE_KEY);
+      if (savedAutoUpload === 'true') setAutoUploadZip(true);
     } catch {
       // Ignore
     }
@@ -698,6 +711,59 @@ export function MusicFlowApp() {
     }
   };
 
+  const handleToggleAutoUploadZip = React.useCallback((enabled: boolean) => {
+    setAutoUploadZip(enabled);
+    try {
+      window.localStorage.setItem(AUTO_UPLOAD_ZIP_STORAGE_KEY, enabled ? 'true' : 'false');
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const handleUploadZipToCloud = React.useCallback(
+    async (jobIds: string[], zipName?: string) => {
+      if (jobIds.length === 0) return;
+      setUploadingZip(true);
+      setHostedZip(null);
+      try {
+        const res = await clientFetch('/jobs/zip/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobIds,
+            zipName,
+            provider: 'auto',
+            retention: '72h',
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.url) {
+          throw new Error(data.error || 'Falha ao enviar ZIP para hospedagem anônima.');
+        }
+
+        const result = data as HostedZipResult;
+        const copied = await copyTextToClipboard(result.url);
+        setHostedZip({ ...result, copiedToClipboard: copied });
+        notify(
+          'success',
+          copied ? 'ZIP enviado e link copiado!' : 'ZIP enviado com sucesso!',
+          copied
+            ? `${result.url} (${result.expiresIn})`
+            : 'Link pronto. Toque em "Copiar link" para copiar.',
+        );
+      } catch (err) {
+        notify(
+          'error',
+          'Erro ao enviar ZIP',
+          formatUserFriendlyError(err, 'Não foi possível enviar o ZIP no momento.'),
+        );
+      } finally {
+        setUploadingZip(false);
+      }
+    },
+    [notify],
+  );
+
   const handleDownloadZip = React.useCallback(
     async (jobIds: string[], zipName?: string) => {
       if (jobIds.length === 0) return;
@@ -817,6 +883,9 @@ export function MusicFlowApp() {
                   prev ? { ...prev, status: 'downloading_zip' } : null,
                 );
                 await handleDownloadZip(completedIds, zipBatchTarget.title);
+                if (autoUploadZip) {
+                  await handleUploadZipToCloud(completedIds, zipBatchTarget.title);
+                }
               }
               setZipBatchTarget((prev) =>
                 prev ? { ...prev, status: 'completed' } : null,
@@ -838,7 +907,7 @@ export function MusicFlowApp() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [handleDownloadZip, recordHistory, zipBatchTarget]);
+  }, [autoUploadZip, handleDownloadZip, handleUploadZipToCloud, recordHistory, zipBatchTarget]);
 
   const activeZipBatch: ActiveZipBatchState | null = React.useMemo(() => {
     if (!zipBatchTarget) return null;
@@ -891,9 +960,12 @@ export function MusicFlowApp() {
       }
     }
 
-    // If every selected track is already converted, download the ZIP immediately!
+    // If every selected track is already converted, download (and auto-upload if enabled) immediately!
     if (itemsToEnqueue.length === 0 && alreadyCompletedJobIds.length > 0) {
       await handleDownloadZip(alreadyCompletedJobIds, zipName);
+      if (autoUploadZip) {
+        await handleUploadZipToCloud(alreadyCompletedJobIds, zipName);
+      }
       return;
     }
 
@@ -1219,6 +1291,11 @@ export function MusicFlowApp() {
             }}
             itemJobs={itemJobs}
             onDownloadZip={handleDownloadZip}
+            autoUploadZip={autoUploadZip}
+            onToggleAutoUploadZip={handleToggleAutoUploadZip}
+            uploadingZip={uploadingZip}
+            onUploadZipToCloud={handleUploadZipToCloud}
+            hostedZip={hostedZip}
             onSpotifyLogin={handleSpotifyLogin}
             onNotify={notify}
           />
@@ -1231,6 +1308,10 @@ export function MusicFlowApp() {
           onCancelJob={handleCancelJob}
           onRetryJob={handleRetryJob}
           onDownloadZip={handleDownloadZip}
+          uploadingZip={uploadingZip}
+          onUploadZipToCloud={handleUploadZipToCloud}
+          hostedZip={hostedZip}
+          onLinkCopied={() => notify('success', 'Link copiado para a área de transferência!')}
           onClearHistory={() => {
             setHistory([]);
             window.localStorage.removeItem(HISTORY_STORAGE_KEY);

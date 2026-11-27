@@ -9,6 +9,7 @@ import {
   type CollectionResult,
   type ConversionJob,
   type ExportFormat,
+  type HostedZipResult,
   type MediaItem,
   type UploadMetadata,
 } from '@musicflow/shared';
@@ -19,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  CloudUpload,
   Download,
   ExternalLink,
   FileAudio,
@@ -42,6 +44,7 @@ import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { formatDuration } from '@/lib/format';
 import { getJobDownloadUrl } from '@/lib/api-client';
+import { HostedZipBanner } from './hosted-zip-banner';
 import type { ToastType } from './notifications';
 
 export interface ActiveZipBatchState {
@@ -69,6 +72,11 @@ interface CollectionViewProps {
   onInspectSingleItem: (item: MediaItem) => Promise<void>;
   itemJobs: Record<string, ConversionJob>;
   onDownloadZip: (jobIds: string[], zipName?: string) => Promise<void>;
+  autoUploadZip?: boolean;
+  onToggleAutoUploadZip?: (enabled: boolean) => void;
+  uploadingZip?: boolean;
+  onUploadZipToCloud?: (jobIds: string[], zipName?: string) => Promise<void>;
+  hostedZip?: HostedZipResult | null;
   onSpotifyLogin?: () => Promise<void>;
   onNotify: (type: ToastType, title: string, description?: string) => void;
 }
@@ -90,6 +98,11 @@ export function CollectionView({
   onInspectSingleItem,
   itemJobs,
   onDownloadZip,
+  autoUploadZip = false,
+  onToggleAutoUploadZip,
+  uploadingZip = false,
+  onUploadZipToCloud,
+  hostedZip,
   onSpotifyLogin,
   onNotify,
 }: CollectionViewProps) {
@@ -583,6 +596,22 @@ export function CollectionView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {onToggleAutoUploadZip && (
+              <label
+                className="inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2.5 text-xs hover:border-purple-500/40 transition-colors"
+                title="Enviar automaticamente o ZIP para Catbox.moe (sem login) e copiar o link"
+              >
+                <input
+                  type="checkbox"
+                  checked={autoUploadZip}
+                  onChange={(e) => onToggleAutoUploadZip(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-purple-500 cursor-pointer"
+                />
+                <CloudUpload className="h-3.5 w-3.5 text-purple-400 shrink-0" aria-hidden="true" />
+                <span>Auto-upar ZIP (Catbox)</span>
+              </label>
+            )}
+
             <Button
               type="button"
               size="sm"
@@ -642,15 +671,36 @@ export function CollectionView({
                 )}
 
                 {activeZipBatch.status === 'completed' && activeZipBatch.completedIds.length > 0 && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="emerald"
-                    onClick={() => void onDownloadZip(activeZipBatch.completedIds, collection.title)}
-                  >
-                    <Archive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    Baixar ZIP novamente ({activeZipBatch.completedIds.length})
-                  </Button>
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="emerald"
+                      onClick={() => void onDownloadZip(activeZipBatch.completedIds, collection.title)}
+                    >
+                      <Archive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      Baixar ZIP novamente ({activeZipBatch.completedIds.length})
+                    </Button>
+
+                    {onUploadZipToCloud && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={uploadingZip}
+                        onClick={() =>
+                          void onUploadZipToCloud(activeZipBatch.completedIds, collection.title)
+                        }
+                      >
+                        {uploadingZip ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden="true" />
+                        ) : (
+                          <CloudUpload className="h-3.5 w-3.5 text-purple-400 shrink-0" aria-hidden="true" />
+                        )}
+                        {uploadingZip ? 'Enviando Catbox...' : 'Upar ZIP (Catbox)'}
+                      </Button>
+                    )}
+                  </>
                 )}
 
                 {activeZipBatch.status === 'running' && onCancelAutoZipBatch && (
@@ -668,7 +718,21 @@ export function CollectionView({
             </div>
 
             <Progress value={activeZipBatch.overallProgress} />
+
+            {uploadingZip && (
+              <p className="flex items-center gap-1.5 text-xs text-purple-300">
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" aria-hidden="true" />
+                Enviando ZIP para Catbox.moe (sem login) e copiando o link...
+              </p>
+            )}
           </div>
+        )}
+
+        {hostedZip && (
+          <HostedZipBanner
+            hostedZip={hostedZip}
+            onCopied={() => onNotify('success', 'Link copiado para a área de transferência!')}
+          />
         )}
 
         {/* Paginated Track List (handles 200+ / 1000+ tracks smoothly) */}

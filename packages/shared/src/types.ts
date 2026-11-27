@@ -244,3 +244,13 @@ export interface UploadMetadata {
   codec?: string;
   createdAt: string;
 }
+
+export interface HostedZipResult {
+  url: string;
+  provider: 'catbox' | 'litterbox';
+  fileName: string;
+  sizeBytes: number;
+  fileCount: number;
+  expiresIn: string;
+  copiedToClipboard?: boolean;
+}

@@ -3,11 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createWorkerApp } from '../app.js';
 import { loadConfig } from '../config.js';
 import { ensureTempDirectories } from '../services/cleanup.js';
 import { parseIso8601Duration } from '../services/youtube.js';
+import { uploadZipToAnonymousHost } from '../services/zip-uploader.js';
 
 async function generateTestWav(ffmpegPath: string, targetPath: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -312,5 +313,44 @@ describe('Worker API & Real FFmpeg Integration', () => {
     const rootRes = await request(ctx.app).get('/');
     expect(rootRes.status).toBe(200);
     expect(rootRes.body.status).toBe('ok');
+  });
+
+  it('uploads ZIP to Catbox.moe with Litterbox fallback and rejects invalid host responses', async () => {
+    const tmpZip = path.join(tmpRoot, 'test-upload.zip');
+    await fs.writeFile(tmpZip, Buffer.from('504b03040000', 'hex'));
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('catbox.moe/user/api.php')) {
+        return new Response('https://files.catbox.moe/abc123.zip', { status: 200 });
+      }
+      return new Response('https://litter.catbox.moe/xyz789.zip', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const catboxRes = await uploadZipToAnonymousHost({
+        filePath: tmpZip,
+        fileName: 'playlist.zip',
+        sizeBytes: 1024,
+        provider: 'auto',
+        allowPrivateNetworkFetch: true,
+      });
+      expect(catboxRes.provider).toBe('catbox');
+      expect(catboxRes.url).toBe('https://files.catbox.moe/abc123.zip');
+
+      // Test automatic fallback to Litterbox when Catbox returns 500
+      fetchMock.mockImplementationOnce(async () => new Response('down', { status: 502 }));
+      const fallbackRes = await uploadZipToAnonymousHost({
+        filePath: tmpZip,
+        fileName: 'playlist.zip',
+        sizeBytes: 1024,
+        provider: 'auto',
+        retention: '72h',
+        allowPrivateNetworkFetch: true,
+      });
+      expect(fallbackRes.provider).toBe('litterbox');
+      expect(fallbackRes.url).toBe('https://litter.catbox.moe/xyz789.zip');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
