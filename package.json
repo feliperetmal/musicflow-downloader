@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "start:local": "node scripts/start-local.mjs",
     "dev:worker": "npm --workspace=@musicflow/worker run dev",
     "dev:web": "npm --workspace=@musicflow/web run dev",
     "build": "npm --workspace=@musicflow/shared run build && npm --workspace=@musicflow/worker run build && npm --workspace=@musicflow/web run build",

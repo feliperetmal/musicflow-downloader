@@ -29,12 +29,16 @@ export async function GET(req: NextRequest) {
         ? data.returnTo
         : safeReturnTo;
 
+    const isHttps =
+      req.nextUrl.protocol === 'https:' ||
+      req.headers.get('x-forwarded-proto') === 'https';
+
     const response = NextResponse.redirect(new URL(finalPath, req.url));
     response.cookies.set(SPOTIFY_SESSION_COOKIE, data.sessionId, {
       httpOnly: true,
       sameSite: 'lax',
       path: '/',
-      secure: process.env.NODE_ENV === 'production',
+      secure: isHttps,
       maxAge: 60 * 60 * 24 * 180, // 180 days (6 months persistent Spotify session)
     });
     return response;
